@@ -18,11 +18,24 @@ const chaveData = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.ge
 const dataDe = (chave) => { const [a, m, d] = chave.split("-").map(Number); return new Date(a, m - 1, d); };
 const horaAgora = () => { const d = new Date(); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
 const curta = (chave) => `${chave.slice(8, 10)}/${chave.slice(5, 7)}`;
-const ontem = () => { const d = new Date(); d.setDate(d.getDate() - 1); return chaveData(d); };
+const horaOk = (s) => /^([01]\d|2[0-3]):[0-5]\d$/.test(s || "");
+
+// Máscara do campo de hora digitado: "1515" vira "15:15".
+function mascaraHora(el) {
+  const d = el.value.replace(/\D/g, "").slice(0, 4);
+  el.value = d.length > 2 ? `${d.slice(0, 2)}:${d.slice(2)}` : d;
+}
+// Ao sair do campo completa formas curtas: "9" → 09:00, "15" → 15:00, "930" → 09:30.
+function completarHora(el) {
+  const d = el.value.replace(/\D/g, "");
+  if (!d) return;
+  const n = d.length <= 2 ? d.padStart(2, "0") + "00" : d.padStart(4, "0");
+  el.value = `${n.slice(0, 2)}:${n.slice(2, 4)}`;
+}
 
 // ---------- Cálculos ----------
 function minutosTrabalhados(r) {
-  if (!r.inicio || !r.fim) return 0;
+  if (!horaOk(r.inicio) || !horaOk(r.fim)) return 0;
   let min = minutosDe(r.fim) - minutosDe(r.inicio);
   if (min < 0) min += 1440;
   return Math.max(0, min - (r.jantar ? 60 : 0));
@@ -30,7 +43,7 @@ function minutosTrabalhados(r) {
 // Valor de cada dia arredondado a centavos, como no informe; o mês soma os dias.
 const valorDoDia = (r) => Math.round((minutosTrabalhados(r) / 60) * (r.taxa || 0) * 100) / 100;
 const fmtHM = (min) => `${pad(Math.floor(min / 60))}:${pad(min % 60)}`;
-const viraDia = (r) => r.inicio && r.fim && minutosDe(r.fim) < minutosDe(r.inicio);
+const viraDia = (r) => horaOk(r.inicio) && horaOk(r.fim) && minutosDe(r.fim) < minutosDe(r.inicio);
 
 function lerTaxa(texto) {
   const v = Number(String(texto ?? "").trim().replace(/\./g, "").replace(",", "."));
@@ -81,13 +94,6 @@ const registrosDoMes = (ano, mes) => Object.values(dados.registros)
   .filter((r) => r.data.startsWith(`${ano}-${pad(mes)}-`))
   .sort((a, b) => a.data.localeCompare(b.data));
 
-function turnoAberto() {
-  const limite = ontem();
-  return Object.values(dados.registros)
-    .filter((r) => r.inicio && !r.fim && r.data >= limite)
-    .sort((a, b) => b.data.localeCompare(a.data))[0];
-}
-
 // ---------- Tema: automático (segue o aparelho), claro ou escuro ----------
 const midiaEscura = matchMedia("(prefers-color-scheme: dark)");
 function temaEscolhido() {
@@ -110,7 +116,8 @@ midiaEscura.addEventListener("change", () => { if (temaEscolhido() === "auto") a
 const hoje = new Date();
 const ui = { aba: "registrar", ano: hoje.getFullYear(), mes: hoje.getMonth() + 1 };
 
-// Formulário da tela Registrar. `original` é a data do registro em edição (ou null se novo).
+// Formulário da tela Registrar: sempre começa um ponto novo. `original` é a data do
+// registro em edição, aberto pela lista de Registros (ou null se novo).
 let form;
 const formNovo = (data = chaveData(new Date())) => ({
   data, inicio: "", fim: "", jantar: dados.config.jantarPadrao, taxa: dados.config.taxaPadrao, obs: "", original: null, alterado: false,
@@ -119,16 +126,9 @@ const formDe = (r) => ({
   data: r.data, inicio: r.inicio || "", fim: r.fim || "", jantar: !!r.jantar, taxa: r.taxa ?? dados.config.taxaPadrao,
   obs: r.obs || "", original: r.data, alterado: false,
 });
-function formInicial() {
-  const aberto = turnoAberto();
-  if (aberto) return formDe(aberto);
-  const doDia = dados.registros[chaveData(new Date())];
-  return doDia ? formDe(doDia) : formNovo();
-}
-
 function navegar(aba, { manterForm = false } = {}) {
   ui.aba = aba;
-  if (aba === "registrar" && !manterForm) form = formInicial();
+  if (aba === "registrar" && !manterForm) form = formNovo();
   document.querySelectorAll(".abas button").forEach((b) =>
     b.dataset.aba === aba ? b.setAttribute("aria-current", "page") : b.removeAttribute("aria-current"));
   render();
@@ -152,6 +152,10 @@ function render() {
 }
 
 // ---------- Tela: Registrar ----------
+// Campo de hora digitado no teclado numérico do celular (em vez do seletor de rolagem).
+const campoHora = (id, valor, rotulo) => `<input type="text" id="${id}" class="hora" value="${valor}"
+  inputmode="numeric" pattern="[0-9]*" maxlength="5" placeholder="--:--" autocomplete="off" enterkeyhint="next" aria-label="${rotulo}">`;
+
 function telaRegistrar() {
   const f = form;
   return `<div class="total">
@@ -167,12 +171,12 @@ function telaRegistrar() {
       </label>
       <div class="linha">
         <span class="lbl cresce">Início</span>
-        <input type="time" id="f-inicio" class="hora" value="${f.inicio}" aria-label="Início">
+        ${campoHora("f-inicio", f.inicio, "Início")}
         <button class="link" data-acao="agora" data-campo="inicio">Agora</button>
       </div>
       <div class="linha">
         <span class="lbl cresce">Fim <span class="mais1" id="c-mais1" hidden>+1</span></span>
-        <input type="time" id="f-fim" class="hora" value="${f.fim}" aria-label="Fim">
+        ${campoHora("f-fim", f.fim, "Fim")}
         <button class="link" data-acao="agora" data-campo="fim">Agora</button>
       </div>
       <div class="linha">
@@ -215,10 +219,12 @@ function atualizarCalculo() {
 function validar(v) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(v.data)) return "Informe a data.";
   if (!v.inicio) return "Informe o horário de início.";
+  if (!horaOk(v.inicio)) return `Horário de início inválido ("${v.inicio}"). Digite no formato hh:mm, ex.: 14:35.`;
+  if (v.fim && !horaOk(v.fim)) return `Horário de fim inválido ("${v.fim}"). Digite no formato hh:mm, ex.: 23:30.`;
   if (v.fim && v.fim === v.inicio) return "Início e fim não podem ser iguais.";
   if (v.fim && v.jantar && minutosTrabalhados({ ...v, jantar: false }) <= 60) return "O turno tem 1h ou menos: use pausa 0 ou corrija os horários.";
   if (!v.taxa) return "Informe o preço por hora (ex.: 50 ou 47,50).";
-  if (dados.registros[v.data] && v.data !== v.original) return `Já existe um registro em ${curta(v.data)}.`;
+  if (dados.registros[v.data] && v.data !== v.original) return `Já existe um registro em ${curta(v.data)}. Para alterá-lo, toque nele em Registros.`;
   return "";
 }
 
@@ -230,10 +236,12 @@ function salvarRegistro() {
   const { data, inicio, fim, jantar, taxa, obs } = form;
   dados.registros[data] = { data, inicio, fim, jantar, taxa, obs };
   if (!salvar()) return;
-  form = formDe(dados.registros[data]);
-  avisar(fim ? `Salvo · ${fmtHM(minutosTrabalhados(form))} h` : `Início salvo às ${inicio}`);
+  const editando = form.original;
+  avisar(fim ? `${curta(data)} salvo · ${fmtHM(minutosTrabalhados(dados.registros[data]))} h` : `Início salvo às ${inicio}`);
   pedirPersistencia();
-  render();
+  // O ponto salvo fica em Registros; a tela volta zerada para o próximo.
+  form = formNovo();
+  if (editando) navegar("registros"); else render();
 }
 
 function excluirRegistro() {
@@ -242,14 +250,6 @@ function excluirRegistro() {
   if (salvar()) avisar(`${curta(form.original)} excluído`);
   form = formNovo();
   render();
-}
-
-function trocarData() {
-  const nova = $("#f-data").value;
-  if (!nova) return;
-  const existente = dados.registros[nova];
-  if (existente && nova !== form.original) { form = formDe(existente); render(); return; }
-  atualizarCalculo();
 }
 
 // ---------- Tela: Registros ----------
@@ -546,10 +546,19 @@ document.addEventListener("click", (e) => {
 });
 
 document.addEventListener("input", (e) => {
-  if (ui.aba === "registrar" && e.target.id?.startsWith("f-") && e.target.id !== "f-data") { form.alterado = true; atualizarCalculo(); }
+  if (ui.aba !== "registrar" || !e.target.id?.startsWith("f-") || e.target.id === "f-data") return;
+  form.alterado = true;
+  if (e.target.classList.contains("hora")) {
+    mascaraHora(e.target);
+    // Início completo: pula para o fim.
+    if (e.target.id === "f-inicio" && horaOk(e.target.value) && !$("#f-fim").value) $("#f-fim").focus();
+  }
+  atualizarCalculo();
 });
 document.addEventListener("change", (e) => {
-  if (e.target.id === "f-data") { form.alterado = true; trocarData(); }
+  if (ui.aba !== "registrar") return;
+  if (e.target.classList?.contains("hora")) completarHora(e.target);
+  if (e.target.id?.startsWith("f-")) { form.alterado = true; atualizarCalculo(); }
 });
 
 $("#dialogo").addEventListener("click", (e) => { if (e.target.id === "dialogo") fecharDialogo(); });
