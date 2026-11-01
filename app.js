@@ -2,6 +2,7 @@ import { ErroPlanilha, gerarPlanilha, lerModelo, minutosDe, nomeArquivo } from "
 
 const CHAVE = "ponto-comau.v1";
 const CHAVE_MODELO = "ponto-comau.modelo";
+const CHAVE_TEMA = "ponto-comau.tema";
 const MESES = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
 const SEMANA = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
 const MIME_XLSM = "application/vnd.ms-excel.sheet.macroEnabled.12";
@@ -10,7 +11,7 @@ const $ = (sel, raiz = document) => raiz.querySelector(sel);
 const pad = (n) => String(n).padStart(2, "0");
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const reais = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
-const ICONE_RELOGIO = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>';
+const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
 // ---------- Datas ----------
 const chaveData = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -18,8 +19,6 @@ const dataDe = (chave) => { const [a, m, d] = chave.split("-").map(Number); retu
 const horaAgora = () => { const d = new Date(); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
 const curta = (chave) => `${chave.slice(8, 10)}/${chave.slice(5, 7)}`;
 const ontem = () => { const d = new Date(); d.setDate(d.getDate() - 1); return chaveData(d); };
-const mesCurto = (d) => d.toLocaleDateString("pt-BR", { month: "short" }).replace(".", "");
-const tituloDia = (chave) => { const d = dataDe(chave); return `${SEMANA[d.getDay()]}. ${d.getDate()} ${mesCurto(d)}. ${String(d.getFullYear()).slice(2)}`; };
 
 // ---------- Cálculos ----------
 function minutosTrabalhados(r) {
@@ -28,17 +27,18 @@ function minutosTrabalhados(r) {
   if (min < 0) min += 1440;
   return Math.max(0, min - (r.jantar ? 60 : 0));
 }
+// Valor de cada dia arredondado a centavos, como no informe; o mês soma os dias.
 const valorDoDia = (r) => Math.round((minutosTrabalhados(r) / 60) * (r.taxa || 0) * 100) / 100;
 const fmtHM = (min) => `${pad(Math.floor(min / 60))}:${pad(min % 60)}`;
 const viraDia = (r) => r.inicio && r.fim && minutosDe(r.fim) < minutosDe(r.inicio);
 
 function lerTaxa(texto) {
-  const v = Number(String(texto).trim().replace(/\./g, "").replace(",", "."));
+  const v = Number(String(texto ?? "").trim().replace(/\./g, "").replace(",", "."));
   return Number.isFinite(v) && v > 0 ? v : null;
 }
 const taxaTexto = (v) => (v == null ? "" : String(v).replace(".", ","));
 
-// ---------- Armazenamento ----------
+// ---------- Armazenamento (só neste aparelho) ----------
 const PADRAO = { registros: {}, config: { taxaPadrao: 50, centroPadrao: null, jantarPadrao: true, ultimoBackup: null } };
 let dados = carregar();
 let infoModelo = carregarModelo(); // { arquivo, importadoEm, funcionario, centros, base64 } ou null
@@ -88,9 +88,27 @@ function turnoAberto() {
     .sort((a, b) => b.data.localeCompare(a.data))[0];
 }
 
+// ---------- Tema: automático (segue o aparelho), claro ou escuro ----------
+const midiaEscura = matchMedia("(prefers-color-scheme: dark)");
+function temaEscolhido() {
+  try { return localStorage.getItem(CHAVE_TEMA) || "auto"; } catch { return "auto"; }
+}
+const temaEfetivo = () => { const t = temaEscolhido(); return t === "auto" ? (midiaEscura.matches ? "dark" : "light") : t; };
+function aplicarTema() {
+  const t = temaEfetivo();
+  document.documentElement.dataset.theme = t;
+  $('meta[name="theme-color"]').content = t === "light" ? "#f6f4f4" : "#0a0a0b";
+}
+function escolherTema(t) {
+  try { localStorage.setItem(CHAVE_TEMA, t); } catch { /* vale só nesta sessão */ }
+  aplicarTema();
+  if (ui.aba === "ajustes") render();
+}
+midiaEscura.addEventListener("change", () => { if (temaEscolhido() === "auto") aplicarTema(); });
+
 // ---------- Estado da interface ----------
 const hoje = new Date();
-const ui = { aba: "registrar", ano: hoje.getFullYear(), mes: hoje.getMonth() + 1, crescente: true };
+const ui = { aba: "registrar", ano: hoje.getFullYear(), mes: hoje.getMonth() + 1 };
 
 // Formulário da tela Registrar. `original` é a data do registro em edição (ou null se novo).
 let form;
@@ -111,75 +129,70 @@ function formInicial() {
 function navegar(aba, { manterForm = false } = {}) {
   ui.aba = aba;
   if (aba === "registrar" && !manterForm) form = formInicial();
-  document.querySelectorAll(".aba").forEach((b) =>
+  document.querySelectorAll(".abas button").forEach((b) =>
     b.dataset.aba === aba ? b.setAttribute("aria-current", "page") : b.removeAttribute("aria-current"));
   render();
-  window.scrollTo(0, 0);
+  $("#conteudo").scrollTop = 0;
 }
 
 function render() {
-  const telas = { registrar: telaRegistrar, registros: telaRegistros, ajustes: telaAjustes };
-  $("#conteudo").innerHTML = telas[ui.aba]();
+  const telas = {
+    registrar: ["Registrar", cap(new Date().toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "long" })), telaRegistrar,
+      '<button class="link mudo" data-acao="limpar">Limpar</button><button class="primario" data-acao="salvar">Salvar</button>'],
+    registros: ["Registros", "Horas do mês", telaRegistros, '<button class="primario" data-acao="gerar">Gerar planilha COMAU</button>'],
+    ajustes: ["Ajustes", "Preferências do app", telaAjustes, ""],
+  };
+  const [titulo, sub, tela, acoes] = telas[ui.aba];
+  $("#cab-titulo").textContent = titulo;
+  $("#cab-sub").textContent = sub;
+  $("#conteudo").innerHTML = tela();
+  $("#acoes").innerHTML = acoes;
   if (ui.aba === "registrar") atualizarCalculo();
+  if (ui.aba === "registros") $('[data-acao="gerar"]').disabled = !registrosDoMes(ui.ano, ui.mes).length;
 }
 
 // ---------- Tela: Registrar ----------
 function telaRegistrar() {
   const f = form;
-  const estado = f.original ? `Editando o registro de ${curta(f.original)}` : "Novo registro";
-  return `<div class="grade-2 tempo-valor">
-      <div class="cartao">
-        <span class="rotulo">Tempo</span><div class="grande num" id="c-tempo">00:00</div>
-        <span class="rotulo">Minutos</span><div class="grande num" id="c-minutos">0</div>
-      </div>
-      <div class="cartao valor-total"><span class="rotulo">Valor total</span><div class="grande num" id="c-valor">R$ 0,00</div></div>
+  return `<div class="total">
+      <span class="rotulo">Valor total</span>
+      <span class="grande" id="c-valor">R$ 0,00</span>
+      <span class="rotulo num" id="c-sub">00:00 h · 0 min</span>
     </div>
-
-    <label class="cartao linha-icone">
-      <span class="icone icone-data"><svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg></span>
-      <span style="flex:1"><span class="rotulo">Data</span><input type="date" id="f-data" value="${f.data}" required></span>
-    </label>
-
-    <div class="grade-2" style="margin-top:12px">
-      <div class="cartao horario">
-        <div class="horario-cabeca"><strong>Início</strong></div>
-        <input type="time" id="f-inicio" value="${f.inicio}" aria-label="Início">
-        <button class="agora" data-acao="agora" data-campo="inicio">Agora</button>
+    <div>
+      <label class="linha linha-data">
+        <span class="lbl">Data</span>
+        <span class="valor" id="c-data"></span>
+        <input type="date" id="f-data" value="${f.data}" aria-label="Data">
+      </label>
+      <div class="linha">
+        <span class="lbl cresce">Início</span>
+        <input type="time" id="f-inicio" class="hora" value="${f.inicio}" aria-label="Início">
+        <button class="link" data-acao="agora" data-campo="inicio">Agora</button>
       </div>
-      <div class="cartao horario">
-        <div class="horario-cabeca"><strong>Fim</strong><span class="chip-mais1" id="c-mais1" hidden>+1</span></div>
-        <input type="time" id="f-fim" value="${f.fim}" aria-label="Fim">
-        <button class="agora" data-acao="agora" data-campo="fim">Agora</button>
+      <div class="linha">
+        <span class="lbl cresce">Fim <span class="mais1" id="c-mais1" hidden>+1</span></span>
+        <input type="time" id="f-fim" class="hora" value="${f.fim}" aria-label="Fim">
+        <button class="link" data-acao="agora" data-campo="fim">Agora</button>
       </div>
-    </div>
-
-    <div class="cartao pausa-taxa" style="margin-top:12px">
-      <div>
-        <span class="rotulo">Pausa (min)</span>
-        <div class="segmento" role="group" aria-label="Pausa">
+      <div class="linha">
+        <span class="lbl">Pausa (min)</span>
+        <div class="seg" role="group" aria-label="Pausa">
           <button data-acao="pausa" data-valor="0" aria-pressed="${!f.jantar}">0</button>
           <button data-acao="pausa" data-valor="60" aria-pressed="${f.jantar}">60</button>
         </div>
       </div>
-      <div>
-        <span class="rotulo">Preço por hora</span>
-        <input id="f-taxa" inputmode="decimal" value="${taxaTexto(f.taxa)}" aria-label="Preço por hora">
+      <div class="linha">
+        <span class="lbl cresce">Preço por hora</span>
+        <span class="unidade">R$</span>
+        <input id="f-taxa" class="numero" inputmode="decimal" value="${taxaTexto(f.taxa)}" aria-label="Preço por hora">
+      </div>
+      <div class="linha">
+        <input id="f-obs" class="nota" value="${esc(f.obs)}" maxlength="120" placeholder="Observação (opcional, vai para a planilha)" aria-label="Observação">
       </div>
     </div>
-
-    <label class="cartao linha-icone" style="margin-top:12px">
-      <span class="icone icone-obs"><svg viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4V5Z"/></svg></span>
-      <span style="flex:1"><span class="rotulo">Observação</span><input id="f-obs" value="${esc(f.obs)}" maxlength="120" placeholder="Opcional — vai para a planilha"></span>
-    </label>
-
-    <div class="acoes">
-      <button class="btn btn-icone" data-acao="limpar" aria-label="Limpar e começar um novo registro">
-        <svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 2.3-5.6M4 4v5h5"/></svg>
-      </button>
-      <button class="btn btn-primario" data-acao="salvar">Salvar</button>
-    </div>
-    <p class="estado">${estado}</p>
-    ${f.original ? '<button class="btn btn-perigo" data-acao="excluir">Excluir este dia</button>' : ""}`;
+    <p class="estado">${f.original ? `Editando o registro de ${curta(f.original)}` : "Novo registro"}</p>
+    ${f.original ? '<button class="link perigo" data-acao="excluir">Excluir este dia</button>' : ""}`;
 }
 
 function lerFormulario() {
@@ -187,16 +200,15 @@ function lerFormulario() {
   form.inicio = $("#f-inicio").value;
   form.fim = $("#f-fim").value;
   form.obs = $("#f-obs").value.trim();
-  form.taxaTexto = $("#f-taxa").value;
-  form.taxa = lerTaxa(form.taxaTexto);
+  form.taxa = lerTaxa($("#f-taxa").value);
 }
 
 function atualizarCalculo() {
   lerFormulario();
   const min = minutosTrabalhados(form);
-  $("#c-tempo").textContent = fmtHM(min);
-  $("#c-minutos").textContent = String(min);
   $("#c-valor").textContent = reais.format(valorDoDia(form));
+  $("#c-sub").textContent = `${fmtHM(min)} h · ${min} min`;
+  $("#c-data").textContent = form.data ? dataDe(form.data).toLocaleDateString("pt-BR", { day: "numeric", month: "short", year: "numeric" }) : "—";
   $("#c-mais1").hidden = !viraDia(form);
 }
 
@@ -219,7 +231,7 @@ function salvarRegistro() {
   dados.registros[data] = { data, inicio, fim, jantar, taxa, obs };
   if (!salvar()) return;
   form = formDe(dados.registros[data]);
-  avisar(fim ? `Salvo · ${fmtHM(minutosTrabalhados(form))}` : `Início salvo às ${inicio}`);
+  avisar(fim ? `Salvo · ${fmtHM(minutosTrabalhados(form))} h` : `Início salvo às ${inicio}`);
   pedirPersistencia();
   render();
 }
@@ -244,54 +256,37 @@ function trocarData() {
 function telaRegistros() {
   const { ano, mes } = ui;
   const lista = registrosDoMes(ano, mes);
-  if (!ui.crescente) lista.reverse();
   const completos = lista.filter((r) => r.inicio && r.fim);
   const minutos = completos.reduce((s, r) => s + minutosTrabalhados(r), 0);
   const valor = completos.reduce((s, r) => s + valorDoDia(r), 0);
-  const titulo = new Date(ano, mes - 1, 1).toLocaleDateString("pt-BR", { month: "short", year: "numeric" });
   const seta = (d) => `<svg viewBox="0 0 24 24"><path d="${d}"/></svg>`;
 
-  const dias = lista.map((r) => {
+  const itens = lista.map((r) => {
+    const d = dataDe(r.data);
     const completo = r.inicio && r.fim;
-    const min = minutosTrabalhados(r);
-    const extras = [
-      viraDia(r) ? '<span class="chip-mais1">+1</span>' : "",
-      completo && r.jantar ? `<span class="chip chip-neutro">${ICONE_RELOGIO.replace("<svg", '<svg style="width:14px;height:14px"')}60 min</span>` : "",
-      !r.fim ? '<span class="chip chip-alerta">sem fim</span>' : "",
-    ].join("");
-    return `<li class="dia">
-        <div class="dia-cabeca">
-          <strong>${tituloDia(r.data)}</strong>
-          <span class="chips num">
-            <span class="chip chip-tempo">${ICONE_RELOGIO}${fmtHM(min)}</span>
-            <span class="chip chip-dinheiro">${reais.format(valorDoDia(r))}</span>
-          </span>
-        </div>
-        <button class="turno" data-acao="editar" data-data="${r.data}" aria-label="Editar ${curta(r.data)}">
-          <span>
-            <span class="extra"><span class="horas num">${r.inicio || "--:--"} – ${r.fim || "--:--"}</span>${extras}</span>
-            ${r.obs ? `<span class="obs">${esc(r.obs)}</span>` : ""}
-          </span>
-          <span class="dinheiro num">${completo ? reais.format(valorDoDia(r)) : ""}</span>
-        </button>
-      </li>`;
+    const meta = [completo ? `${fmtHM(minutosTrabalhados(r))} h` : "", r.jantar ? "pausa 60 min" : "sem pausa", r.obs].filter(Boolean).join(" · ");
+    return `<li><button class="reg" data-acao="editar" data-data="${r.data}" aria-label="Editar ${curta(r.data)}">
+        <span class="reg-dia"><b>${d.getDate()}</b><small>${SEMANA[d.getDay()]}</small></span>
+        <span class="reg-meio">
+          <span class="reg-faixa">${r.inicio || "--:--"} – ${r.fim || "--:--"}${viraDia(r) ? ' <span class="mais1">+1</span>' : ""}</span>
+          <span class="reg-meta">${completo ? "" : '<span class="sem-fim">sem fim · </span>'}${esc(meta)}</span>
+        </span>
+        <span class="reg-valor">${completo ? reais.format(valorDoDia(r)) : ""}</span>
+      </button></li>`;
   }).join("");
 
-  return `<div class="filtros">
-      <button class="btn-redondo" data-acao="mes-anterior" aria-label="Mês anterior">${seta("M15 6l-6 6 6 6")}</button>
-      <h1>${titulo}</h1>
-      <button class="btn-redondo" data-acao="mes-seguinte" aria-label="Próximo mês">${seta("M9 6l6 6-6 6")}</button>
-      <button class="btn-redondo" data-acao="ordenar" aria-label="${ui.crescente ? "Mostrar mais recentes primeiro" : "Mostrar mais antigos primeiro"}">${seta(ui.crescente ? "M12 19V5M6 11l6-6 6 6" : "M12 5v14M6 13l6 6 6-6")}</button>
+  return `<div class="nav-mes">
+      <button class="icone-btn" data-acao="mes-anterior" aria-label="Mês anterior">${seta("M15 18l-6-6 6-6")}</button>
+      <span>${MESES[mes - 1]} de ${ano}</span>
+      <button class="icone-btn" data-acao="mes-seguinte" aria-label="Próximo mês">${seta("M9 18l6-6-6-6")}</button>
     </div>
-    <div class="cartao totais">
-      <span class="chips num">
-        <span class="chip chip-neutro">${completos.length} dias</span>
-        <span class="chip chip-tempo">${ICONE_RELOGIO}${fmtHM(minutos)}</span>
-        <span class="chip chip-dinheiro">${reais.format(valor)}</span>
-      </span>
+    <div class="estatisticas">
+      <div><span class="rotulo">Dias</span><span class="estat">${completos.length}</span></div>
+      <div><span class="rotulo">Horas</span><span class="estat">${fmtHM(minutos)}</span></div>
+      <div><span class="rotulo">Total</span><span class="estat">${reais.format(valor)}</span></div>
     </div>
-    <button class="btn btn-primario" style="margin-top:12px" data-acao="gerar" ${lista.length ? "" : "disabled"}>Gerar planilha COMAU</button>
-    ${lista.length ? `<ul class="dias">${dias}</ul>` : `<div class="vazio">Nenhum registro em ${MESES[mes - 1].toLowerCase()}.</div>`}`;
+    ${lista.length ? `<ul class="lista">${itens}</ul>`
+      : `<div class="vazio"><span>Nenhum registro em ${MESES[mes - 1].toLowerCase()}.</span><button class="link encostado" data-aba="registrar">Registrar um dia</button></div>`}`;
 }
 
 function mudarMes(delta) {
@@ -327,10 +322,10 @@ async function gerar() {
   if (!infoModelo) {
     return abrirDialogo(`<div class="folha">
         <h2>Escolha o modelo da planilha</h2>
-        <p class="sub">Selecione no app Arquivos uma planilha COMAU de qualquer mês (.xlsm). Ela fica guardada só neste aparelho e serve de base para as próximas.</p>
+        <p class="sub-folha">Selecione no app Arquivos uma planilha COMAU de qualquer mês (.xlsm). Ela fica guardada só neste aparelho e serve de base para as próximas.</p>
         <div class="pilha">
-          <button class="btn btn-primario" data-acao="modelo">Escolher planilha modelo</button>
-          <button class="btn" data-acao="fechar">Agora não</button>
+          <button class="primario" data-acao="modelo">Escolher planilha modelo</button>
+          <button class="secundario" data-acao="fechar">Agora não</button>
         </div>
       </div>`);
   }
@@ -347,17 +342,15 @@ async function gerar() {
     abrirDialogo(`<div class="folha">
         <div class="icone-resultado ok"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></div>
         <h2>Planilha gerada</h2>
-        <p class="sub">${esc(arquivo.name)}</p>
-        <div class="cartao totais" style="margin-bottom:16px">
-          <span class="chips num">
-            <span class="chip chip-neutro">${r.dias} dias</span>
-            <span class="chip chip-tempo">${ICONE_RELOGIO}${fmtHM(Math.round(r.totalHoras * 60))}</span>
-            <span class="chip chip-dinheiro">${reais.format(valor)}</span>
-          </span>
+        <p class="sub-folha">${esc(arquivo.name)}</p>
+        <div class="estatisticas" style="margin-bottom:20px">
+          <div><span class="rotulo">Dias</span><span class="estat">${r.dias}</span></div>
+          <div><span class="rotulo">Horas</span><span class="estat">${fmtHM(Math.round(r.totalHoras * 60))}</span></div>
+          <div><span class="rotulo">Total</span><span class="estat">${reais.format(valor)}</span></div>
         </div>
         <div class="pilha">
-          <button class="btn btn-primario" data-acao="compartilhar">Salvar ou compartilhar</button>
-          <button class="btn" data-acao="fechar">Fechar</button>
+          <button class="primario" data-acao="compartilhar">Salvar ou compartilhar</button>
+          <button class="secundario" data-acao="fechar">Fechar</button>
         </div>
       </div>`);
     $('[data-acao="compartilhar"]').addEventListener("click", () => entregarArquivo(arquivo));
@@ -396,54 +389,66 @@ function escolherArquivo(aceita) {
 // ---------- Tela: Ajustes ----------
 function telaAjustes() {
   const c = dados.config;
+  const tema = temaEscolhido();
+  const opcaoTema = (v, rotulo) => `<button data-acao="tema" data-valor="${v}" aria-pressed="${tema === v}">${rotulo}</button>`;
   const ultimo = c.ultimoBackup ? new Date(c.ultimoBackup).toLocaleDateString("pt-BR") : "nunca";
-  const modelo = infoModelo
-    ? `<div class="cartao">
-        <strong style="word-break:break-word">${esc(infoModelo.arquivo)}</strong>
-        <p class="mudo" style="margin:4px 0 0;font-size:14px">Escolhido em ${new Date(infoModelo.importadoEm).toLocaleDateString("pt-BR")}</p>
+  return `<h2 class="secao">Aparência</h2>
+    <div class="linha">
+      <span class="lbl-forte">Tema</span>
+      <div class="seg" role="group" aria-label="Tema">${opcaoTema("auto", "Auto")}${opcaoTema("light", "Claro")}${opcaoTema("dark", "Escuro")}</div>
+    </div>
+
+    <h2 class="secao">Novos registros</h2>
+    <div class="linha">
+      <span class="lbl-forte cresce">Preço por hora padrão</span>
+      <span class="unidade">R$</span>
+      <input id="a-taxa" class="numero" inputmode="decimal" value="${taxaTexto(c.taxaPadrao)}" aria-label="Preço por hora padrão">
+    </div>
+    <div class="linha alta">
+      <div class="cresce pilha-v">
+        <span class="lbl-forte">Pausa de 60 min por padrão</span>
+        <span class="dica">Desmarque se costuma não jantar</span>
       </div>
-      <button class="btn" style="margin-top:10px" data-acao="modelo">Trocar modelo</button>`
-    : `<div class="cartao"><p style="margin:0">Nenhum modelo escolhido.</p></div>
-      <button class="btn" style="margin-top:10px" data-acao="modelo">Escolher modelo</button>`;
-  return `<section class="secao">
-      <h2>Modelo da planilha</h2>
-      ${modelo}
-      <p class="dica">Qualquer planilha COMAU já feita serve. Ela fica guardada só neste aparelho.</p>
-    </section>
-    <form id="ajustes" novalidate>
-      <section class="secao">
-        <h2>Novos registros</h2>
-        <label class="campo"><span>Preço por hora padrão (R$)</span><input type="text" name="taxa" inputmode="decimal" value="${taxaTexto(c.taxaPadrao)}"></label>
-        <div class="cartao linha-switch">
-          <div>Pausa de 60 min por padrão<small>Desmarque se costuma não jantar</small></div>
-          <label class="switch"><input type="checkbox" name="jantar" ${c.jantarPadrao ? "checked" : ""} aria-label="Pausa de 60 minutos por padrão"><span></span></label>
-        </div>
-        <div class="pilha" style="margin-top:14px">
-          <button class="btn btn-primario" type="submit">Salvar ajustes</button>
-          <button class="btn" type="button" data-acao="aplicar-taxa">Aplicar preço aos dias de ${MESES[ui.mes - 1].toLowerCase()}/${ui.ano}</button>
-        </div>
-      </section>
-    </form>
-    <section class="secao">
-      <h2>Backup</h2>
-      <div class="cartao"><p style="margin:0">Os registros ficam só neste aparelho. Último backup: <strong>${ultimo}</strong>.</p></div>
-      <div class="grade-2" style="margin-top:10px">
-        <button class="btn" data-acao="backup">Fazer backup</button>
-        <button class="btn" data-acao="restaurar">Restaurar</button>
+      <button class="interruptor" data-acao="pausa-padrao" role="switch" aria-checked="${c.jantarPadrao}" aria-label="Pausa de 60 minutos por padrão"><span></span></button>
+    </div>
+    <div class="linha">
+      <button class="link encostado" data-acao="aplicar-taxa">Aplicar preço a ${MESES[ui.mes - 1].toLowerCase()}</button>
+      <button class="link" data-acao="salvar-ajustes">Salvar</button>
+    </div>
+
+    <h2 class="secao">Modelo da planilha</h2>
+    <div class="linha alta">
+      <div class="cresce pilha-v">
+        <span class="lbl-forte reticencias">${infoModelo ? esc(infoModelo.arquivo) : "Nenhum modelo escolhido"}</span>
+        <span class="dica">${infoModelo ? `Escolhido em ${new Date(infoModelo.importadoEm).toLocaleDateString("pt-BR")} · fica só neste aparelho` : "Qualquer planilha COMAU já feita serve"}</span>
       </div>
-    </section>
-    <p class="mudo" style="text-align:center;font-size:13px;margin-top:32px">Ponto COMAU · ${Object.keys(dados.registros).length} dias registrados</p>`;
+      <button class="link" data-acao="modelo">${infoModelo ? "Trocar" : "Escolher"}</button>
+    </div>
+
+    <h2 class="secao">Backup</h2>
+    <div class="linha alta">
+      <div class="cresce pilha-v">
+        <span class="lbl-forte">Último backup</span>
+        <span class="dica">${ultimo} · inclui registros, ajustes e modelo</span>
+      </div>
+      <button class="link" data-acao="backup">Fazer agora</button>
+    </div>
+    <div class="linha">
+      <span class="lbl-forte cresce">Restaurar de um backup</span>
+      <button class="link" data-acao="restaurar">Restaurar</button>
+    </div>
+    <p class="estado" style="text-align:center;margin-top:28px">Ponto COMAU · ${Object.keys(dados.registros).length} dias registrados</p>`;
 }
 
-function salvarAjustes(f) {
-  const taxa = lerTaxa(f.taxa.value);
+function salvarTaxaPadrao() {
+  const taxa = lerTaxa($("#a-taxa").value);
   if (!taxa) { mostrarErro("Ajustes não salvos", "Informe o preço por hora (ex.: 50 ou 47,50)."); return null; }
-  Object.assign(dados.config, { taxaPadrao: taxa, jantarPadrao: f.jantar.checked });
+  dados.config.taxaPadrao = taxa;
   return salvar() ? taxa : null;
 }
 
 function aplicarTaxaAoMes() {
-  const taxa = salvarAjustes($("#ajustes"));
+  const taxa = salvarTaxaPadrao();
   if (!taxa) return;
   const lista = registrosDoMes(ui.ano, ui.mes);
   if (!lista.length) return mostrarErro("Nada para alterar", `Não há registros em ${MESES[ui.mes - 1].toLowerCase()}/${ui.ano}.`);
@@ -454,7 +459,7 @@ function aplicarTaxaAoMes() {
 }
 
 async function fazerBackup() {
-  // O backup leva também o modelo, para restaurar tudo num aparelho novo.
+  // O backup vai para onde você escolher (ex.: iCloud Drive); nada é enviado à internet pelo app.
   const conteudo = JSON.stringify({ app: "ponto-comau", versao: 1, exportadoEm: new Date().toISOString(), ...dados, modelo: infoModelo }, null, 2);
   const ok = await entregarArquivo(new File([conteudo], `backup-ponto-${chaveData(new Date())}.json`, { type: "application/json" }));
   if (ok) {
@@ -483,7 +488,7 @@ async function restaurarBackup() {
   render();
 }
 
-// ---------- Diálogos e confirmações ----------
+// ---------- Diálogos e avisos ----------
 function abrirDialogo(html) {
   const d = $("#dialogo");
   d.innerHTML = html;
@@ -498,8 +503,8 @@ function mostrarErro(titulo, mensagem) {
   abrirDialogo(`<div class="folha">
       <div class="icone-resultado falha"><svg viewBox="0 0 24 24"><path d="M12 8v5M12 16.5h.01"/></svg></div>
       <h2>${esc(titulo)}</h2>
-      <p class="sub" style="color:var(--ink-2)">${esc(mensagem)}</p>
-      <button class="btn btn-primario" data-acao="fechar">Entendi</button>
+      <p class="sub-folha" style="color:var(--texto)">${esc(mensagem)}</p>
+      <button class="primario" data-acao="fechar">Entendi</button>
     </div>`);
 }
 
@@ -511,7 +516,7 @@ function avisar(texto) {
   el.textContent = texto;
   el.classList.add("visivel");
   clearTimeout(avisoTimer);
-  avisoTimer = setTimeout(() => el.classList.remove("visivel"), 2200);
+  avisoTimer = setTimeout(() => el.classList.remove("visivel"), 2000);
 }
 
 // ---------- Eventos ----------
@@ -529,10 +534,13 @@ document.addEventListener("click", (e) => {
     },
     salvar: salvarRegistro, excluir: excluirRegistro, limpar: () => { form = formNovo(); render(); },
     editar: () => { form = formDe(dados.registros[alvo.dataset.data]); navegar("registrar", { manterForm: true }); },
-    "mes-anterior": () => mudarMes(-1), "mes-seguinte": () => mudarMes(1),
-    ordenar: () => { ui.crescente = !ui.crescente; render(); }, gerar,
-    modelo: () => { fecharDialogo(); escolherModelo(); }, backup: fazerBackup, restaurar: restaurarBackup,
-    "aplicar-taxa": aplicarTaxaAoMes, fechar: fecharDialogo,
+    "mes-anterior": () => mudarMes(-1), "mes-seguinte": () => mudarMes(1), gerar,
+    "alternar-tema": () => escolherTema(temaEfetivo() === "dark" ? "light" : "dark"),
+    tema: () => escolherTema(alvo.dataset.valor),
+    "pausa-padrao": () => { dados.config.jantarPadrao = !dados.config.jantarPadrao; if (salvar()) render(); },
+    "salvar-ajustes": () => { if (salvarTaxaPadrao()) { avisar("Ajustes salvos"); render(); } },
+    "aplicar-taxa": aplicarTaxaAoMes,
+    modelo: () => { fecharDialogo(); escolherModelo(); }, backup: fazerBackup, restaurar: restaurarBackup, fechar: fecharDialogo,
   };
   if (acoes[alvo.dataset.acao]) { e.preventDefault(); acoes[alvo.dataset.acao](); }
 });
@@ -542,11 +550,6 @@ document.addEventListener("input", (e) => {
 });
 document.addEventListener("change", (e) => {
   if (e.target.id === "f-data") { form.alterado = true; trocarData(); }
-});
-document.addEventListener("submit", (e) => {
-  if (e.target.id !== "ajustes") return;
-  e.preventDefault();
-  if (salvarAjustes(e.target)) { avisar("Ajustes salvos"); render(); }
 });
 
 $("#dialogo").addEventListener("click", (e) => { if (e.target.id === "dialogo") fecharDialogo(); });
@@ -559,4 +562,5 @@ if ("serviceWorker" in navigator && location.protocol !== "file:") {
   navigator.serviceWorker.register("sw.js").catch(() => { /* app funciona sem offline */ });
 }
 
+aplicarTema();
 navegar("registrar");
