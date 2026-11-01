@@ -1,4 +1,5 @@
 import { ErroPlanilha, gerarPlanilha, lerModelo, minutosDe, nomeArquivo } from "./xlsm.js";
+import { desenharComprovante } from "./comprovante.js";
 
 const CHAVE = "ponto-comau.v1";
 const CHAVE_MODELO = "ponto-comau.modelo";
@@ -285,6 +286,7 @@ function telaRegistros() {
       <div><span class="rotulo">Horas</span><span class="estat">${fmtHM(minutos)}</span></div>
       <div><span class="rotulo">Total</span><span class="estat">${reais.format(valor)}</span></div>
     </div>
+    ${lista.length ? `<div class="linha"><span class="lbl-forte cresce">Comprovante do mês</span><button class="link" data-acao="comprovante">Gerar imagem</button></div>` : ""}
     ${lista.length ? `<ul class="lista">${itens}</ul>`
       : `<div class="vazio"><span>Nenhum registro em ${MESES[mes - 1].toLowerCase()}.</span><button class="link encostado" data-aba="registrar">Registrar um dia</button></div>`}`;
 }
@@ -339,21 +341,25 @@ async function gerar() {
     });
     const valor = registros.filter((x) => x.fim).reduce((s, x) => s + valorDoDia(x), 0);
     const arquivo = new File([r.arquivo], nomeArquivo(ano, mes, infoModelo.funcionario), { type: MIME_XLSM });
+    // O comprovante já fica pronto aqui: o iPhone só compartilha arquivos prontos no toque do botão.
+    const comprovante = await criarComprovante(ano, mes);
     abrirDialogo(`<div class="folha">
         <div class="icone-resultado ok"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></div>
         <h2>Planilha gerada</h2>
-        <p class="sub-folha">${esc(arquivo.name)}</p>
+        <p class="sub-folha">${esc(arquivo.name)}<br>+ comprovante com os ${registros.length} dias registrados</p>
         <div class="estatisticas" style="margin-bottom:20px">
           <div><span class="rotulo">Dias</span><span class="estat">${r.dias}</span></div>
           <div><span class="rotulo">Horas</span><span class="estat">${fmtHM(Math.round(r.totalHoras * 60))}</span></div>
           <div><span class="rotulo">Total</span><span class="estat">${reais.format(valor)}</span></div>
         </div>
         <div class="pilha">
-          <button class="primario" data-acao="compartilhar">Salvar ou compartilhar</button>
-          <button class="secundario" data-acao="fechar">Fechar</button>
+          <button class="primario" data-acao="compartilhar-ambos">Salvar planilha + comprovante</button>
+          <button class="secundario" data-acao="compartilhar">Só a planilha</button>
+          <button class="link mudo" style="width:100%;min-height:44px" data-acao="fechar">Fechar</button>
         </div>
       </div>`);
-    $('[data-acao="compartilhar"]').addEventListener("click", () => entregarArquivo(arquivo));
+    $('[data-acao="compartilhar-ambos"]').addEventListener("click", () => entregarArquivos([arquivo, comprovante]));
+    $('[data-acao="compartilhar"]').addEventListener("click", () => entregarArquivos([arquivo]));
   } catch (e) {
     mostrarErro("Não foi possível gerar a planilha", mensagemDe(e));
   } finally {
@@ -362,18 +368,78 @@ async function gerar() {
   }
 }
 
-async function entregarArquivo(arquivo) {
-  if (navigator.canShare?.({ files: [arquivo] })) {
-    try { await navigator.share({ files: [arquivo], title: arquivo.name }); return true; }
+// Abre o "Compartilhar" do iPhone com os arquivos (Salvar em Arquivos, WhatsApp, e-mail...).
+// Sem suporte a compartilhar (ex.: computador), baixa os arquivos.
+async function entregarArquivos(arquivos) {
+  if (navigator.canShare?.({ files: arquivos })) {
+    try { await navigator.share({ files: arquivos }); return true; }
     catch (e) { if (e.name === "AbortError") return false; }
   }
-  const url = URL.createObjectURL(arquivo);
-  const a = Object.assign(document.createElement("a"), { href: url, download: arquivo.name });
-  document.body.append(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 30000);
+  for (const arquivo of arquivos) {
+    const url = URL.createObjectURL(arquivo);
+    const a = Object.assign(document.createElement("a"), { href: url, download: arquivo.name });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+    await new Promise((r) => setTimeout(r, 400));
+  }
   return true;
+}
+
+// ---------- Comprovante do mês ----------
+async function criarComprovante(ano, mes) {
+  const lista = registrosDoMes(ano, mes);
+  const completos = lista.filter((r) => r.inicio && r.fim);
+  const agora = new Date();
+  const imagem = await desenharComprovante({
+    funcionario: infoModelo?.funcionario || "",
+    titulo: `${MESES[mes - 1]} de ${ano}`,
+    geradoEm: `${agora.toLocaleDateString("pt-BR")} às ${horaAgora()}`,
+    totais: {
+      dias: completos.length,
+      horas: fmtHM(completos.reduce((s, r) => s + minutosTrabalhados(r), 0)),
+      valor: reais.format(completos.reduce((s, r) => s + valorDoDia(r), 0)),
+    },
+    linhas: lista.map((r) => {
+      const d = dataDe(r.data);
+      return {
+        dia: pad(d.getDate()), semana: SEMANA[d.getDay()],
+        faixa: `${r.inicio || "--:--"} – ${r.fim || "--:--"}`, mais1: viraDia(r),
+        pausa: r.jantar ? "60 min" : "0 min", horas: fmtHM(minutosTrabalhados(r)),
+        valor: reais.format(valorDoDia(r)), obs: r.obs || "", semFim: !r.fim,
+      };
+    }),
+  });
+  const primeiro = (infoModelo?.funcionario || "").trim().split(/\s+/)[0];
+  return new File([imagem], `Comprovante_Horas_${primeiro ? primeiro + "_" : ""}${pad(mes)}_${ano}.png`, { type: "image/png" });
+}
+
+async function gerarSoComprovante() {
+  const { ano, mes } = ui;
+  const botao = $('[data-acao="comprovante"]');
+  botao.textContent = "Gerando…";
+  try {
+    const arquivo = await criarComprovante(ano, mes);
+    const url = URL.createObjectURL(arquivo);
+    abrirDialogo(`<div class="folha">
+        <h2>Comprovante de ${MESES[mes - 1].toLowerCase()}</h2>
+        <p class="sub-folha">${esc(arquivo.name)}</p>
+        <div style="max-height:46dvh;overflow-y:auto;border:1px solid var(--borda);border-radius:12px;margin-bottom:18px">
+          <img src="${url}" alt="Prévia do comprovante" style="display:block;width:100%">
+        </div>
+        <div class="pilha">
+          <button class="primario" data-acao="compartilhar">Salvar ou compartilhar</button>
+          <button class="secundario" data-acao="fechar">Fechar</button>
+        </div>
+      </div>`);
+    $('[data-acao="compartilhar"]').addEventListener("click", () => entregarArquivos([arquivo]));
+    $("#dialogo").addEventListener("close", () => URL.revokeObjectURL(url), { once: true });
+  } catch (e) {
+    mostrarErro("Não foi possível gerar o comprovante", mensagemDe(e));
+  } finally {
+    botao.textContent = "Gerar imagem";
+  }
 }
 
 function escolherArquivo(aceita) {
@@ -461,7 +527,7 @@ function aplicarTaxaAoMes() {
 async function fazerBackup() {
   // O backup vai para onde você escolher (ex.: iCloud Drive); nada é enviado à internet pelo app.
   const conteudo = JSON.stringify({ app: "ponto-comau", versao: 1, exportadoEm: new Date().toISOString(), ...dados, modelo: infoModelo }, null, 2);
-  const ok = await entregarArquivo(new File([conteudo], `backup-ponto-${chaveData(new Date())}.json`, { type: "application/json" }));
+  const ok = await entregarArquivos([new File([conteudo], `backup-ponto-${chaveData(new Date())}.json`, { type: "application/json" })]);
   if (ok) {
     dados.config.ultimoBackup = new Date().toISOString();
     salvar();
@@ -534,7 +600,7 @@ document.addEventListener("click", (e) => {
     },
     salvar: salvarRegistro, excluir: excluirRegistro, limpar: () => { form = formNovo(); render(); },
     editar: () => { form = formDe(dados.registros[alvo.dataset.data]); navegar("registrar", { manterForm: true }); },
-    "mes-anterior": () => mudarMes(-1), "mes-seguinte": () => mudarMes(1), gerar,
+    "mes-anterior": () => mudarMes(-1), "mes-seguinte": () => mudarMes(1), gerar, comprovante: gerarSoComprovante,
     "alternar-tema": () => escolherTema(temaEfetivo() === "dark" ? "light" : "dark"),
     tema: () => escolherTema(alvo.dataset.valor),
     "pausa-padrao": () => { dados.config.jantarPadrao = !dados.config.jantarPadrao; if (salvar()) render(); },
