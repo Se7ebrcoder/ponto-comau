@@ -1,17 +1,16 @@
-import { ErroPlanilha, gerarPlanilha, lerInforme, lerModelo, minutosDe, nomeArquivo } from "./xlsm.js";
+import { ErroPlanilha, gerarPlanilha, lerModelo, minutosDe, nomeArquivo } from "./xlsm.js";
 
 const CHAVE = "ponto-comau.v1";
 const CHAVE_MODELO = "ponto-comau.modelo";
 const MESES = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
-const SEMANA = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
-const SEMANA_LONGA = ["Domingo", "Segunda-feira", "Terça-feira", "Quarta-feira", "Quinta-feira", "Sexta-feira", "Sábado"];
-const DIAS_LEMBRETE_BACKUP = 30;
+const SEMANA = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
 const MIME_XLSM = "application/vnd.ms-excel.sheet.macroEnabled.12";
 
 const $ = (sel, raiz = document) => raiz.querySelector(sel);
 const pad = (n) => String(n).padStart(2, "0");
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const reais = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
+const ICONE_RELOGIO = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>';
 
 // ---------- Datas ----------
 const chaveData = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -19,6 +18,8 @@ const dataDe = (chave) => { const [a, m, d] = chave.split("-").map(Number); retu
 const horaAgora = () => { const d = new Date(); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
 const curta = (chave) => `${chave.slice(8, 10)}/${chave.slice(5, 7)}`;
 const ontem = () => { const d = new Date(); d.setDate(d.getDate() - 1); return chaveData(d); };
+const mesCurto = (d) => d.toLocaleDateString("pt-BR", { month: "short" }).replace(".", "");
+const tituloDia = (chave) => { const d = dataDe(chave); return `${SEMANA[d.getDay()]}. ${d.getDate()} ${mesCurto(d)}. ${String(d.getFullYear()).slice(2)}`; };
 
 // ---------- Cálculos ----------
 function minutosTrabalhados(r) {
@@ -28,37 +29,19 @@ function minutosTrabalhados(r) {
   return Math.max(0, min - (r.jantar ? 60 : 0));
 }
 const valorDoDia = (r) => Math.round((minutosTrabalhados(r) / 60) * (r.taxa || 0) * 100) / 100;
-const fmtHoras = (min) => `${Math.floor(min / 60)}h${pad(min % 60)}`;
+const fmtHM = (min) => `${pad(Math.floor(min / 60))}:${pad(min % 60)}`;
+const viraDia = (r) => r.inicio && r.fim && minutosDe(r.fim) < minutosDe(r.inicio);
 
-function totaisDoMes(ano, mes) {
-  const lista = registrosDoMes(ano, mes);
-  const completos = lista.filter((r) => r.inicio && r.fim);
-  return {
-    dias: completos.length,
-    minutos: completos.reduce((s, r) => s + minutosTrabalhados(r), 0),
-    valor: completos.reduce((s, r) => s + valorDoDia(r), 0),
-    pendentes: lista.length - completos.length,
-  };
+function lerTaxa(texto) {
+  const v = Number(String(texto).trim().replace(/\./g, "").replace(",", "."));
+  return Number.isFinite(v) && v > 0 ? v : null;
 }
+const taxaTexto = (v) => (v == null ? "" : String(v).replace(".", ","));
 
 // ---------- Armazenamento ----------
 const PADRAO = { registros: {}, config: { taxaPadrao: 50, centroPadrao: null, jantarPadrao: true, ultimoBackup: null } };
 let dados = carregar();
 let infoModelo = carregarModelo(); // { arquivo, importadoEm, funcionario, centros, base64 } ou null
-
-function carregarModelo() {
-  try { return JSON.parse(localStorage.getItem(CHAVE_MODELO)); } catch { return null; }
-}
-
-const centros = () => infoModelo?.centros || [];
-
-function paraBase64(buffer) {
-  const bytes = new Uint8Array(buffer);
-  let texto = "";
-  for (let i = 0; i < bytes.length; i += 0x8000) texto += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
-  return btoa(texto);
-}
-const deBase64 = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).buffer;
 
 function carregar() {
   try {
@@ -66,6 +49,10 @@ function carregar() {
     if (salvo && salvo.registros) return { registros: salvo.registros, config: { ...PADRAO.config, ...salvo.config } };
   } catch { /* sem dados ou armazenamento bloqueado */ }
   return structuredClone(PADRAO);
+}
+
+function carregarModelo() {
+  try { return JSON.parse(localStorage.getItem(CHAVE_MODELO)); } catch { return null; }
 }
 
 function salvar() {
@@ -82,9 +69,17 @@ async function pedirPersistencia() {
   try { if (navigator.storage?.persist && !(await navigator.storage.persisted())) await navigator.storage.persist(); } catch { /* opcional */ }
 }
 
+function paraBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let texto = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) texto += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(texto);
+}
+const deBase64 = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).buffer;
+
 const registrosDoMes = (ano, mes) => Object.values(dados.registros)
   .filter((r) => r.data.startsWith(`${ano}-${pad(mes)}-`))
-  .sort((a, b) => b.data.localeCompare(a.data));
+  .sort((a, b) => a.data.localeCompare(b.data));
 
 function turnoAberto() {
   const limite = ontem();
@@ -95,11 +90,27 @@ function turnoAberto() {
 
 // ---------- Estado da interface ----------
 const hoje = new Date();
-const ui = { aba: "hoje", ano: hoje.getFullYear(), mes: hoje.getMonth() + 1 };
-let relogio;
+const ui = { aba: "registrar", ano: hoje.getFullYear(), mes: hoje.getMonth() + 1, crescente: true };
 
-function navegar(aba) {
+// Formulário da tela Registrar. `original` é a data do registro em edição (ou null se novo).
+let form;
+const formNovo = (data = chaveData(new Date())) => ({
+  data, inicio: "", fim: "", jantar: dados.config.jantarPadrao, taxa: dados.config.taxaPadrao, obs: "", original: null, alterado: false,
+});
+const formDe = (r) => ({
+  data: r.data, inicio: r.inicio || "", fim: r.fim || "", jantar: !!r.jantar, taxa: r.taxa ?? dados.config.taxaPadrao,
+  obs: r.obs || "", original: r.data, alterado: false,
+});
+function formInicial() {
+  const aberto = turnoAberto();
+  if (aberto) return formDe(aberto);
+  const doDia = dados.registros[chaveData(new Date())];
+  return doDia ? formDe(doDia) : formNovo();
+}
+
+function navegar(aba, { manterForm = false } = {}) {
   ui.aba = aba;
+  if (aba === "registrar" && !manterForm) form = formInicial();
   document.querySelectorAll(".aba").forEach((b) =>
     b.dataset.aba === aba ? b.setAttribute("aria-current", "page") : b.removeAttribute("aria-current"));
   render();
@@ -107,240 +118,186 @@ function navegar(aba) {
 }
 
 function render() {
-  clearInterval(relogio);
-  const conteudo = $("#conteudo");
-  if (ui.aba === "hoje") { conteudo.innerHTML = telaHoje(); relogio = setInterval(atualizarRelogio, 15000); }
-  else if (ui.aba === "mes") conteudo.innerHTML = telaMes();
-  else conteudo.innerHTML = telaAjustes();
+  const telas = { registrar: telaRegistrar, registros: telaRegistros, ajustes: telaAjustes };
+  $("#conteudo").innerHTML = telas[ui.aba]();
+  if (ui.aba === "registrar") atualizarCalculo();
 }
 
-function atualizarRelogio() {
-  if (ui.aba !== "hoje") return;
-  const r = $("#relogio");
-  if (r) r.textContent = horaAgora();
-  const aberto = turnoAberto();
-  const dec = $("#decorrido");
-  if (aberto && dec) dec.textContent = fmtHoras(minutosTrabalhados({ ...aberto, fim: horaAgora(), jantar: false }));
-}
-
-// ---------- Tela: Hoje ----------
-function faixaBackup() {
-  const datas = Object.keys(dados.registros).sort();
-  if (!datas.length) return "";
-  // Conta a partir do último backup ou, se nunca houve, do registro mais antigo.
-  const ultimo = dados.config.ultimoBackup;
-  const referencia = ultimo ? new Date(ultimo) : dataDe(datas[0]);
-  const dias = Math.floor((Date.now() - referencia) / 86400000);
-  if (dias < DIAS_LEMBRETE_BACKUP) return "";
-  const texto = ultimo ? `Último backup há ${dias} dias.` : "Você ainda não fez backup dos registros.";
-  return faixa(texto, "backup", "Fazer agora");
-}
-
-function faixa(texto, acao, rotulo) {
-  return `<div class="faixa faixa-alerta"><svg viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
-    <span>${texto}</span><button data-acao="${acao}">${rotulo}</button></div>`;
-}
-
-const faixaModelo = () => infoModelo ? "" : faixa("Escolha o modelo da planilha para poder gerá-la.", "modelo", "Escolher");
-
-function telaHoje() {
-  const agora = new Date();
-  const chaveHoje = chaveData(agora);
-  const aberto = turnoAberto();
-  const doDia = dados.registros[chaveHoje];
-  const t = totaisDoMes(agora.getFullYear(), agora.getMonth() + 1);
-
-  let cartao, botao = "";
-  if (aberto) {
-    const quando = aberto.data === chaveHoje ? "" : " (ontem)";
-    cartao = `<div class="status"><span class="ponto ativo"></span>Em andamento</div>
-      <p class="status-detalhe">Entrada às ${aberto.inicio}${quando}</p>
-      <div class="decorrido num" id="decorrido">${fmtHoras(minutosTrabalhados({ ...aberto, fim: horaAgora(), jantar: false }))}</div>`;
-    botao = `<div class="cartao linha-switch" style="margin-top:12px">
-        <div>Jantei<small>Desconta 1h do dia</small></div>
-        <label class="switch"><input type="checkbox" data-acao="jantar" ${aberto.jantar ? "checked" : ""} aria-label="Jantei"><span></span></label>
+// ---------- Tela: Registrar ----------
+function telaRegistrar() {
+  const f = form;
+  const estado = f.original ? `Editando o registro de ${curta(f.original)}` : "Novo registro";
+  return `<div class="grade-2 tempo-valor">
+      <div class="cartao">
+        <span class="rotulo">Tempo</span><div class="grande num" id="c-tempo">00:00</div>
+        <span class="rotulo">Minutos</span><div class="grande num" id="c-minutos">0</div>
       </div>
-      <button class="btn btn-primario btn-grande" data-acao="saida">Registrar saída</button>`;
-  } else if (doDia && doDia.fim) {
-    cartao = `<div class="status"><span class="ponto"></span>Dia registrado</div>
-      <p class="status-detalhe num">${doDia.inicio} – ${doDia.fim} · ${fmtHoras(minutosTrabalhados(doDia))} · ${reais.format(valorDoDia(doDia))}</p>`;
-    botao = `<button class="btn btn-grande" data-acao="editar" data-data="${chaveHoje}">Editar registro de hoje</button>`;
-  } else {
-    cartao = `<div class="status"><span class="ponto"></span>Nenhum registro hoje</div>
-      <p class="status-detalhe">Toque em entrada quando começar o turno.</p>`;
-    botao = `<button class="btn btn-primario btn-grande" data-acao="entrada">Registrar entrada</button>`;
-  }
+      <div class="cartao valor-total"><span class="rotulo">Valor total</span><div class="grande num" id="c-valor">R$ 0,00</div></div>
+    </div>
 
-  return `${faixaModelo()}${faixaBackup()}
-    <header class="cabecalho"><p>${SEMANA_LONGA[agora.getDay()]}, ${agora.getDate()} de ${MESES[agora.getMonth()].toLowerCase()}</p></header>
-    <div class="relogio num" id="relogio">${horaAgora()}</div>
-    <div class="cartao">${cartao}</div>
-    ${botao}
-    <section class="secao">
-      <h2>${MESES[agora.getMonth()]}</h2>
-      <a href="#" class="resumo-link" data-acao="ir-mes">
-        <div class="resumo num">
-          <div><small>Dias</small><strong>${t.dias}</strong></div>
-          <div><small>Horas</small><strong>${fmtHoras(t.minutos)}</strong></div>
-          <div><small>Valor</small><strong>${reais.format(t.valor)}</strong></div>
+    <label class="cartao linha-icone">
+      <span class="icone icone-data"><svg viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg></span>
+      <span style="flex:1"><span class="rotulo">Data</span><input type="date" id="f-data" value="${f.data}" required></span>
+    </label>
+
+    <div class="grade-2" style="margin-top:12px">
+      <div class="cartao horario">
+        <div class="horario-cabeca"><strong>Início</strong></div>
+        <input type="time" id="f-inicio" value="${f.inicio}" aria-label="Início">
+        <button class="agora" data-acao="agora" data-campo="inicio">Agora</button>
+      </div>
+      <div class="cartao horario">
+        <div class="horario-cabeca"><strong>Fim</strong><span class="chip-mais1" id="c-mais1" hidden>+1</span></div>
+        <input type="time" id="f-fim" value="${f.fim}" aria-label="Fim">
+        <button class="agora" data-acao="agora" data-campo="fim">Agora</button>
+      </div>
+    </div>
+
+    <div class="cartao pausa-taxa" style="margin-top:12px">
+      <div>
+        <span class="rotulo">Pausa (min)</span>
+        <div class="segmento" role="group" aria-label="Pausa">
+          <button data-acao="pausa" data-valor="0" aria-pressed="${!f.jantar}">0</button>
+          <button data-acao="pausa" data-valor="60" aria-pressed="${f.jantar}">60</button>
         </div>
-      </a>
-    </section>`;
+      </div>
+      <div>
+        <span class="rotulo">Preço por hora</span>
+        <input id="f-taxa" inputmode="decimal" value="${taxaTexto(f.taxa)}" aria-label="Preço por hora">
+      </div>
+    </div>
+
+    <label class="cartao linha-icone" style="margin-top:12px">
+      <span class="icone icone-obs"><svg viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4V5Z"/></svg></span>
+      <span style="flex:1"><span class="rotulo">Observação</span><input id="f-obs" value="${esc(f.obs)}" maxlength="120" placeholder="Opcional — vai para a planilha"></span>
+    </label>
+
+    <div class="acoes">
+      <button class="btn btn-icone" data-acao="limpar" aria-label="Limpar e começar um novo registro">
+        <svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 2.3-5.6M4 4v5h5"/></svg>
+      </button>
+      <button class="btn btn-primario" data-acao="salvar">Salvar</button>
+    </div>
+    <p class="estado">${estado}</p>
+    ${f.original ? '<button class="btn btn-perigo" data-acao="excluir">Excluir este dia</button>' : ""}`;
 }
 
-function registrarEntrada() {
-  const chave = chaveData(new Date());
-  if (dados.registros[chave]) return abrirEditor(chave);
-  const c = dados.config;
-  dados.registros[chave] = { data: chave, inicio: horaAgora(), fim: "", jantar: c.jantarPadrao, taxa: c.taxaPadrao, centro: c.centroPadrao, obs: "" };
-  if (salvar()) { avisar(`Entrada registrada às ${dados.registros[chave].inicio}`); pedirPersistencia(); }
+function lerFormulario() {
+  form.data = $("#f-data").value;
+  form.inicio = $("#f-inicio").value;
+  form.fim = $("#f-fim").value;
+  form.obs = $("#f-obs").value.trim();
+  form.taxaTexto = $("#f-taxa").value;
+  form.taxa = lerTaxa(form.taxaTexto);
+}
+
+function atualizarCalculo() {
+  lerFormulario();
+  const min = minutosTrabalhados(form);
+  $("#c-tempo").textContent = fmtHM(min);
+  $("#c-minutos").textContent = String(min);
+  $("#c-valor").textContent = reais.format(valorDoDia(form));
+  $("#c-mais1").hidden = !viraDia(form);
+}
+
+function validar(v) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v.data)) return "Informe a data.";
+  if (!v.inicio) return "Informe o horário de início.";
+  if (v.fim && v.fim === v.inicio) return "Início e fim não podem ser iguais.";
+  if (v.fim && v.jantar && minutosTrabalhados({ ...v, jantar: false }) <= 60) return "O turno tem 1h ou menos: use pausa 0 ou corrija os horários.";
+  if (!v.taxa) return "Informe o preço por hora (ex.: 50 ou 47,50).";
+  if (dados.registros[v.data] && v.data !== v.original) return `Já existe um registro em ${curta(v.data)}.`;
+  return "";
+}
+
+function salvarRegistro() {
+  lerFormulario();
+  const erro = validar(form);
+  if (erro) return mostrarErro("Não foi possível salvar", erro);
+  if (form.original && form.original !== form.data) delete dados.registros[form.original];
+  const { data, inicio, fim, jantar, taxa, obs } = form;
+  dados.registros[data] = { data, inicio, fim, jantar, taxa, obs };
+  if (!salvar()) return;
+  form = formDe(dados.registros[data]);
+  avisar(fim ? `Salvo · ${fmtHM(minutosTrabalhados(form))}` : `Início salvo às ${inicio}`);
+  pedirPersistencia();
   render();
 }
 
-function registrarSaida() {
-  const aberto = turnoAberto();
-  if (!aberto) return;
-  aberto.fim = horaAgora();
-  if (aberto.fim === aberto.inicio) {
-    aberto.fim = "";
-    return mostrarErro("Saída não registrada", "A saída não pode ser no mesmo minuto da entrada.");
-  }
-  if (salvar()) avisar(`Saída registrada · ${fmtHoras(minutosTrabalhados(aberto))}`);
+function excluirRegistro() {
+  if (!form.original || !confirm(`Excluir o dia ${curta(form.original)}?`)) return;
+  delete dados.registros[form.original];
+  if (salvar()) avisar(`${curta(form.original)} excluído`);
+  form = formNovo();
   render();
 }
 
-// ---------- Tela: Mês ----------
-function telaMes() {
+function trocarData() {
+  const nova = $("#f-data").value;
+  if (!nova) return;
+  const existente = dados.registros[nova];
+  if (existente && nova !== form.original) { form = formDe(existente); render(); return; }
+  atualizarCalculo();
+}
+
+// ---------- Tela: Registros ----------
+function telaRegistros() {
   const { ano, mes } = ui;
   const lista = registrosDoMes(ano, mes);
-  const t = totaisDoMes(ano, mes);
+  if (!ui.crescente) lista.reverse();
+  const completos = lista.filter((r) => r.inicio && r.fim);
+  const minutos = completos.reduce((s, r) => s + minutosTrabalhados(r), 0);
+  const valor = completos.reduce((s, r) => s + valorDoDia(r), 0);
+  const titulo = new Date(ano, mes - 1, 1).toLocaleDateString("pt-BR", { month: "short", year: "numeric" });
   const seta = (d) => `<svg viewBox="0 0 24 24"><path d="${d}"/></svg>`;
 
-  const itens = lista.map((r) => {
-    const d = dataDe(r.data);
+  const dias = lista.map((r) => {
     const completo = r.inicio && r.fim;
-    const tags = [
-      !r.fim ? '<span class="tag tag-alerta">sem saída</span>' : "",
-      completo && !r.jantar ? '<span class="tag tag-neutra">sem janta</span>' : "",
+    const min = minutosTrabalhados(r);
+    const extras = [
+      viraDia(r) ? '<span class="chip-mais1">+1</span>' : "",
+      completo && r.jantar ? `<span class="chip chip-neutro">${ICONE_RELOGIO.replace("<svg", '<svg style="width:14px;height:14px"')}60 min</span>` : "",
+      !r.fim ? '<span class="chip chip-alerta">sem fim</span>' : "",
     ].join("");
-    const detalhe = [`${reais.format(r.taxa || 0)}/h`, r.centro && r.centro !== dados.config.centroPadrao ? esc(r.centro) : "", esc(r.obs)]
-      .filter(Boolean).join(" · ");
-    return `<li><button data-acao="editar" data-data="${r.data}">
-        <span class="dia"><strong class="num">${pad(d.getDate())}</strong><small>${SEMANA[d.getDay()]}</small></span>
-        <span><span class="horario num">${r.inicio || "--:--"} – ${r.fim || "--:--"}</span>${tags}<br><span class="detalhe">${detalhe}</span></span>
-        <span class="valores num"><strong>${completo ? fmtHoras(minutosTrabalhados(r)) : "—"}</strong><small>${completo ? reais.format(valorDoDia(r)) : ""}</small></span>
-      </button></li>`;
+    return `<li class="dia">
+        <div class="dia-cabeca">
+          <strong>${tituloDia(r.data)}</strong>
+          <span class="chips num">
+            <span class="chip chip-tempo">${ICONE_RELOGIO}${fmtHM(min)}</span>
+            <span class="chip chip-dinheiro">${reais.format(valorDoDia(r))}</span>
+          </span>
+        </div>
+        <button class="turno" data-acao="editar" data-data="${r.data}" aria-label="Editar ${curta(r.data)}">
+          <span>
+            <span class="extra"><span class="horas num">${r.inicio || "--:--"} – ${r.fim || "--:--"}</span>${extras}</span>
+            ${r.obs ? `<span class="obs">${esc(r.obs)}</span>` : ""}
+          </span>
+          <span class="dinheiro num">${completo ? reais.format(valorDoDia(r)) : ""}</span>
+        </button>
+      </li>`;
   }).join("");
 
-  return `${faixaModelo()}<div class="nav-mes">
-      <button data-acao="mes-anterior" aria-label="Mês anterior">${seta("M15 6l-6 6 6 6")}</button>
-      <h1>${MESES[mes - 1]} ${ano}</h1>
-      <button data-acao="mes-seguinte" aria-label="Próximo mês">${seta("M9 6l6 6-6 6")}</button>
+  return `<div class="filtros">
+      <button class="btn-redondo" data-acao="mes-anterior" aria-label="Mês anterior">${seta("M15 6l-6 6 6 6")}</button>
+      <h1>${titulo}</h1>
+      <button class="btn-redondo" data-acao="mes-seguinte" aria-label="Próximo mês">${seta("M9 6l6 6-6 6")}</button>
+      <button class="btn-redondo" data-acao="ordenar" aria-label="${ui.crescente ? "Mostrar mais recentes primeiro" : "Mostrar mais antigos primeiro"}">${seta(ui.crescente ? "M12 19V5M6 11l6-6 6 6" : "M12 5v14M6 13l6 6 6-6")}</button>
     </div>
-    <div class="resumo num">
-      <div><small>Dias</small><strong>${t.dias}</strong></div>
-      <div><small>Horas</small><strong>${fmtHoras(t.minutos)}</strong></div>
-      <div><small>Valor</small><strong>${reais.format(t.valor)}</strong></div>
+    <div class="cartao totais">
+      <span class="chips num">
+        <span class="chip chip-neutro">${completos.length} dias</span>
+        <span class="chip chip-tempo">${ICONE_RELOGIO}${fmtHM(minutos)}</span>
+        <span class="chip chip-dinheiro">${reais.format(valor)}</span>
+      </span>
     </div>
-    <section class="secao pilha">
-      <button class="btn btn-primario" data-acao="gerar" ${lista.length ? "" : "disabled"}>Gerar planilha COMAU</button>
-      <div class="grade-2">
-        <button class="btn" data-acao="novo">Adicionar dia</button>
-        <button class="btn" data-acao="importar">Importar informe</button>
-      </div>
-    </section>
-    <section class="secao">
-      <h2>Dias lançados</h2>
-      ${lista.length ? `<ul class="lista">${itens}</ul>` : `<div class="vazio">Nenhum dia lançado em ${MESES[mes - 1].toLowerCase()}.</div>`}
-    </section>`;
+    <button class="btn btn-primario" style="margin-top:12px" data-acao="gerar" ${lista.length ? "" : "disabled"}>Gerar planilha COMAU</button>
+    ${lista.length ? `<ul class="dias">${dias}</ul>` : `<div class="vazio">Nenhum registro em ${MESES[mes - 1].toLowerCase()}.</div>`}`;
 }
 
 function mudarMes(delta) {
   const d = new Date(ui.ano, ui.mes - 1 + delta, 1);
-  ui.ano = d.getFullYear();
-  ui.mes = d.getMonth() + 1;
+  [ui.ano, ui.mes] = [d.getFullYear(), d.getMonth() + 1];
   render();
-}
-
-// ---------- Editor de dia ----------
-function abrirEditor(chave) {
-  const existente = chave ? dados.registros[chave] : null;
-  const c = dados.config;
-  const padraoData = (() => {
-    const hojeChave = chaveData(new Date());
-    return hojeChave.startsWith(`${ui.ano}-${pad(ui.mes)}`) ? hojeChave : `${ui.ano}-${pad(ui.mes)}-01`;
-  })();
-  const r = existente || { data: padraoData, inicio: "", fim: "", jantar: c.jantarPadrao, taxa: c.taxaPadrao, centro: c.centroPadrao, obs: "" };
-  const lista = [...new Set([...centros(), r.centro].filter(Boolean))];
-  const opcoes = lista.length
-    ? lista.map((x) => `<option ${x === r.centro ? "selected" : ""}>${esc(x)}</option>`).join("")
-    : '<option value="">Escolha o modelo em Ajustes para ver a lista</option>';
-
-  abrirDialogo(`<form class="folha" id="editor" novalidate>
-      <h2>${existente ? `Editar ${curta(r.data)}` : "Adicionar dia"}</h2>
-      <p class="sub">${existente ? SEMANA_LONGA[dataDe(r.data).getDay()] : "Lance ou corrija um dia de trabalho."}</p>
-      <div class="erro" id="erro-editor" role="alert"></div>
-      <label class="campo"><span>Data</span><input type="date" name="data" value="${r.data}" required></label>
-      <div class="grade-2">
-        <label class="campo"><span>Entrada</span><input type="time" name="inicio" value="${r.inicio}" required></label>
-        <label class="campo"><span>Saída</span><input type="time" name="fim" value="${r.fim}"></label>
-      </div>
-      <div class="cartao linha-switch" style="margin-bottom:14px">
-        <div>Jantei<small>Desconta 1h do dia</small></div>
-        <label class="switch"><input type="checkbox" name="jantar" ${r.jantar ? "checked" : ""} aria-label="Jantei"><span></span></label>
-      </div>
-      <label class="campo"><span>Taxa por hora (R$)</span><input type="text" name="taxa" inputmode="decimal" value="${String(r.taxa ?? "").replace(".", ",")}"></label>
-      <label class="campo"><span>Centro de custo</span><select name="centro">${opcoes}</select></label>
-      <label class="campo"><span>Observação</span><input type="text" name="obs" value="${esc(r.obs)}" maxlength="120" placeholder="Opcional — vai para a planilha"></label>
-      <div class="previa num" id="previa"></div>
-      <div class="pilha">
-        <button class="btn btn-primario" type="submit">Salvar</button>
-        ${existente ? '<button class="btn btn-perigo" type="button" data-acao="excluir">Excluir dia</button>' : ""}
-        <button class="btn" type="button" data-acao="fechar">Cancelar</button>
-      </div>
-    </form>`);
-
-  const form = $("#editor");
-  const lerForm = () => ({
-    data: form.data.value, inicio: form.inicio.value, fim: form.fim.value, jantar: form.jantar.checked,
-    taxa: Number(form.taxa.value.replace(/\./g, "").replace(",", ".")), centro: form.centro.value, obs: form.obs.value.trim(),
-  });
-  const atualizarPrevia = () => {
-    const v = lerForm();
-    $("#previa").innerHTML = v.inicio && v.fim
-      ? `<span>${fmtHoras(minutosTrabalhados(v))}</span><span>${Number.isFinite(v.taxa) ? reais.format(valorDoDia(v)) : "—"}</span>`
-      : `<span class="mudo">Preencha entrada e saída</span><span></span>`;
-  };
-  form.addEventListener("input", atualizarPrevia);
-  atualizarPrevia();
-
-  form.addEventListener("submit", (e) => {
-    e.preventDefault();
-    const v = lerForm();
-    const erro = validar(v, existente);
-    if (erro) { const el = $("#erro-editor"); el.textContent = erro; el.classList.add("visivel"); el.scrollIntoView({ block: "nearest" }); return; }
-    if (existente && existente.data !== v.data) delete dados.registros[existente.data];
-    dados.registros[v.data] = v;
-    if (salvar()) { fecharDialogo(); avisar(`${curta(v.data)} salvo`); pedirPersistencia(); }
-    [ui.ano, ui.mes] = [Number(v.data.slice(0, 4)), Number(v.data.slice(5, 7))];
-    render();
-  });
-  form.querySelector('[data-acao="excluir"]')?.addEventListener("click", () => {
-    if (!confirm(`Excluir o dia ${curta(existente.data)}?`)) return;
-    delete dados.registros[existente.data];
-    if (salvar()) { fecharDialogo(); avisar(`${curta(existente.data)} excluído`); }
-    render();
-  });
-}
-
-function validar(v, existente) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(v.data)) return "Informe a data.";
-  if (!v.inicio) return "Informe o horário de entrada.";
-  if (v.fim && v.fim === v.inicio) return "Entrada e saída não podem ser iguais.";
-  if (v.fim && v.jantar && minutosTrabalhados({ ...v, jantar: false }) <= 60) return "O turno tem 1h ou menos: desmarque \"Jantei\" ou corrija os horários.";
-  if (!Number.isFinite(v.taxa) || v.taxa <= 0) return "Informe a taxa por hora (ex.: 50 ou 47,50).";
-  if (dados.registros[v.data] && (!existente || existente.data !== v.data)) return `Já existe um registro em ${curta(v.data)}. Edite esse dia em vez de criar outro.`;
-  return "";
 }
 
 // ---------- Gerar planilha ----------
@@ -357,9 +314,8 @@ async function escolherModelo() {
     return mostrarErro("Não foi possível salvar o modelo", "O armazenamento do aparelho está cheio ou bloqueado. Libere espaço e tente novamente.");
   }
   infoModelo = novo;
-  if (!lido.centros.includes(dados.config.centroPadrao)) { dados.config.centroPadrao = lido.centroMaisUsado; salvar(); }
-  // Registros feitos antes do modelo ficam com o centro padrão.
-  Object.values(dados.registros).forEach((r) => { if (!r.centro) r.centro = dados.config.centroPadrao; });
+  // O centro de custo da planilha é sempre o mais usado no modelo.
+  dados.config.centroPadrao = lido.centroMaisUsado;
   salvar();
   pedirPersistencia();
   avisar("Modelo configurado");
@@ -382,19 +338,22 @@ async function gerar() {
   botao.disabled = true;
   botao.textContent = "Gerando…";
   try {
+    const registros = registrosDoMes(ano, mes).map((r) => ({ ...r, centro: null }));
     const r = await gerarPlanilha(window.JSZip, deBase64(infoModelo.base64), {
-      ano, mes, centroPadrao: dados.config.centroPadrao, registros: registrosDoMes(ano, mes),
+      ano, mes, centroPadrao: dados.config.centroPadrao || infoModelo.centros[0], registros,
     });
-    const t = totaisDoMes(ano, mes);
+    const valor = registros.filter((x) => x.fim).reduce((s, x) => s + valorDoDia(x), 0);
     const arquivo = new File([r.arquivo], nomeArquivo(ano, mes, infoModelo.funcionario), { type: MIME_XLSM });
     abrirDialogo(`<div class="folha">
         <div class="icone-resultado ok"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></div>
         <h2>Planilha gerada</h2>
         <p class="sub">${esc(arquivo.name)}</p>
-        <div class="resumo num" style="margin-bottom:16px">
-          <div><small>Dias</small><strong>${r.dias}</strong></div>
-          <div><small>Horas</small><strong>${fmtHoras(Math.round(r.totalHoras * 60))}</strong></div>
-          <div><small>Valor</small><strong>${reais.format(t.valor)}</strong></div>
+        <div class="cartao totais" style="margin-bottom:16px">
+          <span class="chips num">
+            <span class="chip chip-neutro">${r.dias} dias</span>
+            <span class="chip chip-tempo">${ICONE_RELOGIO}${fmtHM(Math.round(r.totalHoras * 60))}</span>
+            <span class="chip chip-dinheiro">${reais.format(valor)}</span>
+          </span>
         </div>
         <div class="pilha">
           <button class="btn btn-primario" data-acao="compartilhar">Salvar ou compartilhar</button>
@@ -424,7 +383,6 @@ async function entregarArquivo(arquivo) {
   return true;
 }
 
-// ---------- Importar informe ----------
 function escolherArquivo(aceita) {
   return new Promise((resolve) => {
     const input = $("#arquivo");
@@ -435,85 +393,40 @@ function escolherArquivo(aceita) {
   });
 }
 
-async function importarInforme() {
-  const arq = await escolherArquivo(".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-  if (!arq) return;
-  let lido;
-  try { lido = await lerInforme(window.JSZip, await arq.arrayBuffer()); }
-  catch (e) { return mostrarErro("Informe inválido", mensagemDe(e)); }
-
-  const { ano, mes, registros } = lido;
-  const repetidos = registros.filter((r) => dados.registros[r.data]).length;
-  abrirDialogo(`<div class="folha">
-      <h2>Importar informe</h2>
-      <p class="sub">${esc(arq.name)}</p>
-      <div class="cartao" style="margin-bottom:16px">
-        <strong>${registros.length} dias de ${MESES[mes - 1].toLowerCase()} de ${ano}</strong>
-        <p class="mudo" style="margin:4px 0 0">${repetidos ? `${repetidos} dia(s) já lançados serão substituídos pelos horários do informe.` : "Nenhum dia desse mês será substituído."}</p>
-      </div>
-      <div class="pilha">
-        <button class="btn btn-primario" data-acao="confirmar-importacao">Importar</button>
-        <button class="btn" data-acao="fechar">Cancelar</button>
-      </div>
-    </div>`);
-  $('[data-acao="confirmar-importacao"]').addEventListener("click", () => {
-    const c = dados.config;
-    for (const r of registros) {
-      const atual = dados.registros[r.data];
-      dados.registros[r.data] = {
-        data: r.data, inicio: r.inicio, fim: r.fim, jantar: r.jantar,
-        taxa: r.taxa ?? atual?.taxa ?? c.taxaPadrao, centro: atual?.centro ?? c.centroPadrao, obs: atual?.obs ?? "",
-      };
-    }
-    if (salvar()) { fecharDialogo(); avisar(`${registros.length} dias importados`); pedirPersistencia(); }
-    [ui.ano, ui.mes] = [ano, mes];
-    render();
-  });
-}
-
 // ---------- Tela: Ajustes ----------
 function telaAjustes() {
   const c = dados.config;
   const ultimo = c.ultimoBackup ? new Date(c.ultimoBackup).toLocaleDateString("pt-BR") : "nunca";
-  const opcoes = centros().length
-    ? centros().map((x) => `<option ${x === c.centroPadrao ? "selected" : ""}>${esc(x)}</option>`).join("")
-    : '<option value="">Escolha o modelo abaixo para ver a lista</option>';
   const modelo = infoModelo
     ? `<div class="cartao">
         <strong style="word-break:break-word">${esc(infoModelo.arquivo)}</strong>
-        <p class="mudo" style="margin:4px 0 0;font-size:14px">Importado em ${new Date(infoModelo.importadoEm).toLocaleDateString("pt-BR")} · ${infoModelo.centros.length} centros de custo</p>
+        <p class="mudo" style="margin:4px 0 0;font-size:14px">Escolhido em ${new Date(infoModelo.importadoEm).toLocaleDateString("pt-BR")}</p>
       </div>
       <button class="btn" style="margin-top:10px" data-acao="modelo">Trocar modelo</button>`
-    : `${faixa("Nenhum modelo escolhido. Ele é necessário para gerar a planilha.", "modelo", "Escolher")}`;
-  return `<header class="cabecalho"><h1>Ajustes</h1></header>
-    <section class="secao" style="margin-top:0">
+    : `<div class="cartao"><p style="margin:0">Nenhum modelo escolhido.</p></div>
+      <button class="btn" style="margin-top:10px" data-acao="modelo">Escolher modelo</button>`;
+  return `<section class="secao">
       <h2>Modelo da planilha</h2>
       ${modelo}
-      <p class="campo-dica" style="margin:10px 0 0">Qualquer planilha COMAU já feita serve. Ela fica guardada só neste aparelho.</p>
+      <p class="dica">Qualquer planilha COMAU já feita serve. Ela fica guardada só neste aparelho.</p>
     </section>
     <form id="ajustes" novalidate>
       <section class="secao">
         <h2>Novos registros</h2>
-        <label class="campo"><span>Taxa por hora padrão (R$)</span><input type="text" name="taxa" inputmode="decimal" value="${String(c.taxaPadrao).replace(".", ",")}"></label>
-        <p class="campo-dica">Usada nos próximos dias. Cada dia guarda a sua própria taxa e pode ser editado no Mês.</p>
-        <label class="campo"><span>Centro de custo padrão</span><select name="centro">${opcoes}</select></label>
+        <label class="campo"><span>Preço por hora padrão (R$)</span><input type="text" name="taxa" inputmode="decimal" value="${taxaTexto(c.taxaPadrao)}"></label>
         <div class="cartao linha-switch">
-          <div>Jantar marcado por padrão<small>Desconta 1h ao registrar a entrada</small></div>
-          <label class="switch"><input type="checkbox" name="jantar" ${c.jantarPadrao ? "checked" : ""} aria-label="Jantar marcado por padrão"><span></span></label>
+          <div>Pausa de 60 min por padrão<small>Desmarque se costuma não jantar</small></div>
+          <label class="switch"><input type="checkbox" name="jantar" ${c.jantarPadrao ? "checked" : ""} aria-label="Pausa de 60 minutos por padrão"><span></span></label>
         </div>
-        <div class="erro" id="erro-ajustes" role="alert" style="margin-top:14px"></div>
         <div class="pilha" style="margin-top:14px">
           <button class="btn btn-primario" type="submit">Salvar ajustes</button>
-          <button class="btn" type="button" data-acao="aplicar-taxa">Aplicar taxa aos dias de ${MESES[ui.mes - 1].toLowerCase()}/${ui.ano}</button>
+          <button class="btn" type="button" data-acao="aplicar-taxa">Aplicar preço aos dias de ${MESES[ui.mes - 1].toLowerCase()}/${ui.ano}</button>
         </div>
       </section>
     </form>
     <section class="secao">
       <h2>Backup</h2>
-      <div class="cartao">
-        <p style="margin:0">Os registros ficam salvos só neste aparelho. Último backup: <strong>${ultimo}</strong>.</p>
-        <p class="mudo" style="margin:6px 0 0;font-size:14px">Guarde o arquivo no app Arquivos ou no iCloud Drive.</p>
-      </div>
+      <div class="cartao"><p style="margin:0">Os registros ficam só neste aparelho. Último backup: <strong>${ultimo}</strong>.</p></div>
       <div class="grade-2" style="margin-top:10px">
         <button class="btn" data-acao="backup">Fazer backup</button>
         <button class="btn" data-acao="restaurar">Restaurar</button>
@@ -522,35 +435,28 @@ function telaAjustes() {
     <p class="mudo" style="text-align:center;font-size:13px;margin-top:32px">Ponto COMAU · ${Object.keys(dados.registros).length} dias registrados</p>`;
 }
 
-function lerTaxa(texto) {
-  const v = Number(String(texto).replace(/\./g, "").replace(",", "."));
-  return Number.isFinite(v) && v > 0 ? v : null;
-}
-
-function salvarAjustes(form) {
-  const taxa = lerTaxa(form.taxa.value);
-  if (!taxa) { const el = $("#erro-ajustes"); el.textContent = "Informe a taxa por hora (ex.: 50 ou 47,50)."; el.classList.add("visivel"); return null; }
-  Object.assign(dados.config, { taxaPadrao: taxa, centroPadrao: form.centro.value || dados.config.centroPadrao, jantarPadrao: form.jantar.checked });
+function salvarAjustes(f) {
+  const taxa = lerTaxa(f.taxa.value);
+  if (!taxa) { mostrarErro("Ajustes não salvos", "Informe o preço por hora (ex.: 50 ou 47,50)."); return null; }
+  Object.assign(dados.config, { taxaPadrao: taxa, jantarPadrao: f.jantar.checked });
   return salvar() ? taxa : null;
 }
 
 function aplicarTaxaAoMes() {
-  const form = $("#ajustes");
-  const taxa = salvarAjustes(form);
+  const taxa = salvarAjustes($("#ajustes"));
   if (!taxa) return;
   const lista = registrosDoMes(ui.ano, ui.mes);
-  if (!lista.length) return mostrarErro("Nada para alterar", `Não há dias lançados em ${MESES[ui.mes - 1].toLowerCase()}/${ui.ano}.`);
+  if (!lista.length) return mostrarErro("Nada para alterar", `Não há registros em ${MESES[ui.mes - 1].toLowerCase()}/${ui.ano}.`);
   if (!confirm(`Aplicar ${reais.format(taxa)}/h aos ${lista.length} dias de ${MESES[ui.mes - 1].toLowerCase()}/${ui.ano}?`)) return;
   lista.forEach((r) => { r.taxa = taxa; });
-  if (salvar()) avisar(`Taxa aplicada a ${lista.length} dias`);
+  if (salvar()) avisar(`Preço aplicado a ${lista.length} dias`);
   render();
 }
 
 async function fazerBackup() {
   // O backup leva também o modelo, para restaurar tudo num aparelho novo.
   const conteudo = JSON.stringify({ app: "ponto-comau", versao: 1, exportadoEm: new Date().toISOString(), ...dados, modelo: infoModelo }, null, 2);
-  const nome = `backup-ponto-${chaveData(new Date())}.json`;
-  const ok = await entregarArquivo(new File([conteudo], nome, { type: "application/json" }));
+  const ok = await entregarArquivo(new File([conteudo], `backup-ponto-${chaveData(new Date())}.json`, { type: "application/json" }));
   if (ok) {
     dados.config.ultimoBackup = new Date().toISOString();
     salvar();
@@ -577,7 +483,7 @@ async function restaurarBackup() {
   render();
 }
 
-// ---------- Diálogos e avisos ----------
+// ---------- Diálogos e confirmações ----------
 function abrirDialogo(html) {
   const d = $("#dialogo");
   d.innerHTML = html;
@@ -605,7 +511,7 @@ function avisar(texto) {
   el.textContent = texto;
   el.classList.add("visivel");
   clearTimeout(avisoTimer);
-  avisoTimer = setTimeout(() => el.classList.remove("visivel"), 2400);
+  avisoTimer = setTimeout(() => el.classList.remove("visivel"), 2200);
 }
 
 // ---------- Eventos ----------
@@ -614,21 +520,29 @@ document.addEventListener("click", (e) => {
   if (!alvo) return;
   if (alvo.dataset.aba) return navegar(alvo.dataset.aba);
   const acoes = {
-    entrada: registrarEntrada, saida: registrarSaida, editar: () => abrirEditor(alvo.dataset.data),
-    novo: () => abrirEditor(null), "ir-mes": () => { const d = new Date(); [ui.ano, ui.mes] = [d.getFullYear(), d.getMonth() + 1]; navegar("mes"); },
-    "mes-anterior": () => mudarMes(-1), "mes-seguinte": () => mudarMes(1), gerar, importar: importarInforme,
-    backup: fazerBackup, restaurar: restaurarBackup, modelo: () => { fecharDialogo(); escolherModelo(); }, "aplicar-taxa": aplicarTaxaAoMes, fechar: fecharDialogo,
+    agora: () => { $(`#f-${alvo.dataset.campo}`).value = horaAgora(); form.alterado = true; atualizarCalculo(); },
+    pausa: () => {
+      form.jantar = alvo.dataset.valor === "60";
+      form.alterado = true;
+      alvo.parentElement.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b === alvo)));
+      atualizarCalculo();
+    },
+    salvar: salvarRegistro, excluir: excluirRegistro, limpar: () => { form = formNovo(); render(); },
+    editar: () => { form = formDe(dados.registros[alvo.dataset.data]); navegar("registrar", { manterForm: true }); },
+    "mes-anterior": () => mudarMes(-1), "mes-seguinte": () => mudarMes(1),
+    ordenar: () => { ui.crescente = !ui.crescente; render(); }, gerar,
+    modelo: () => { fecharDialogo(); escolherModelo(); }, backup: fazerBackup, restaurar: restaurarBackup,
+    "aplicar-taxa": aplicarTaxaAoMes, fechar: fecharDialogo,
   };
   if (acoes[alvo.dataset.acao]) { e.preventDefault(); acoes[alvo.dataset.acao](); }
 });
 
-document.addEventListener("change", (e) => {
-  if (e.target.matches('[data-acao="jantar"]')) {
-    const aberto = turnoAberto();
-    if (aberto) { aberto.jantar = e.target.checked; salvar(); }
-  }
+document.addEventListener("input", (e) => {
+  if (ui.aba === "registrar" && e.target.id?.startsWith("f-") && e.target.id !== "f-data") { form.alterado = true; atualizarCalculo(); }
 });
-
+document.addEventListener("change", (e) => {
+  if (e.target.id === "f-data") { form.alterado = true; trocarData(); }
+});
 document.addEventListener("submit", (e) => {
   if (e.target.id !== "ajustes") return;
   e.preventDefault();
@@ -636,10 +550,13 @@ document.addEventListener("submit", (e) => {
 });
 
 $("#dialogo").addEventListener("click", (e) => { if (e.target.id === "dialogo") fecharDialogo(); });
-document.addEventListener("visibilitychange", () => { if (!document.hidden && ui.aba === "hoje") render(); });
+// Ao voltar para o app (ex.: no dia seguinte), recarrega o formulário se nada foi digitado.
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && ui.aba === "registrar" && !form.alterado) navegar("registrar");
+});
 
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
   navigator.serviceWorker.register("sw.js").catch(() => { /* app funciona sem offline */ });
 }
 
-navegar("hoje");
+navegar("registrar");

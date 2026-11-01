@@ -5,11 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Ponto COMAU</title>
   <meta name="description" content="Registro de horas e geração da planilha oficial COMAU, direto no aparelho.">
-  <meta name="theme-color" content="#fbfbfa" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#141413" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#1e3a8a">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Ponto">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" href="icons/icon-180.png">
@@ -17,22 +16,24 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <main id="conteudo" aria-live="polite"></main>
+  <header class="topo">
+    <nav class="abas" aria-label="Navegação">
+      <button data-aba="registrar" class="aba">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+        <span>Registrar</span>
+      </button>
+      <button data-aba="registros" class="aba">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4V3h6v1M9 10h6M9 14h6M9 18h3"/></svg>
+        <span>Registros</span>
+      </button>
+      <button data-aba="ajustes" class="aba">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>
+        <span>Ajustes</span>
+      </button>
+    </nav>
+  </header>
 
-  <nav class="abas" aria-label="Navegação">
-    <button data-aba="hoje" class="aba">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
-      <span>Hoje</span>
-    </button>
-    <button data-aba="mes" class="aba">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg>
-      <span>Mês</span>
-    </button>
-    <button data-aba="ajustes" class="aba">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
-      <span>Ajustes</span>
-    </button>
-  </nav>
+  <main id="conteudo" aria-live="polite"></main>
 
   <dialog id="dialogo"></dialog>
   <div id="aviso" role="status"></div>
