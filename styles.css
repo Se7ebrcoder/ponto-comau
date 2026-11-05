@@ -7,7 +7,7 @@
 /* Tema claro (padrão); o escuro vem do sistema ou da escolha em Ajustes. */
 :root {
   --bg: #f6f4f4; --campo: #ebe8e8; --borda: rgba(20,10,10,.09); --borda-forte: rgba(20,10,10,.2);
-  --texto: #111111; --mudo: #625a5a; --primaria: #c8102e; --destaque: #b00d27;
+  --texto: #111111; --mudo: #625a5a; --primaria: #f97316; --primaria-texto: #0a0a0b; --destaque: #1d4ed8;
   --dinheiro: #1d7a3e; --perigo: #b3261e; --perigo-bg: #fbeceb;
   --aviso-bg: #111111; --aviso-fg: #ffffff; --folha: #ffffff;
   color-scheme: light;
@@ -15,7 +15,7 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #0a0a0b; --campo: #1f1f21; --borda: rgba(255,255,255,.07); --borda-forte: rgba(255,255,255,.16);
-    --texto: #f4f2f2; --mudo: #a09a9a; --primaria: #d7262e; --destaque: #ff6b70;
+    --texto: #f4f2f2; --mudo: #a09a9a; --primaria: #f97316; --primaria-texto: #0a0a0b; --destaque: #7ca6ff;
     --dinheiro: #63c98a; --perigo: #ff8a7e; --perigo-bg: #3d201d;
     --aviso-bg: #f4f2f2; --aviso-fg: #0a0a0b; --folha: #161618;
     color-scheme: dark;
@@ -23,7 +23,7 @@
 }
 :root[data-theme="dark"] {
   --bg: #0a0a0b; --campo: #1f1f21; --borda: rgba(255,255,255,.07); --borda-forte: rgba(255,255,255,.16);
-  --texto: #f4f2f2; --mudo: #a09a9a; --primaria: #d7262e; --destaque: #ff6b70;
+  --texto: #f4f2f2; --mudo: #a09a9a; --primaria: #f97316; --primaria-texto: #0a0a0b; --destaque: #7ca6ff;
   --dinheiro: #63c98a; --perigo: #ff8a7e; --perigo-bg: #3d201d;
   --aviso-bg: #f4f2f2; --aviso-fg: #0a0a0b; --folha: #161618;
   color-scheme: dark;
@@ -76,7 +76,7 @@ h1 { margin: 0; font-size: 28px; font-weight: 700; letter-spacing: -.02em; }
 /* Campo de hora com fundo, para ficar claro onde tocar mesmo vazio. */
 .hora { position: relative; border: 0; background: var(--campo); border-radius: 10px; font-size: 19px; font-weight: 600; text-align: center;
   outline: none; padding: 6px 8px; width: 120px; min-height: 40px; font-variant-numeric: tabular-nums; appearance: none; -webkit-appearance: none; }
-.hora:focus, .numero:focus { box-shadow: 0 0 0 2px var(--primaria); }
+.hora:focus, .numero:focus { box-shadow: 0 0 0 2px var(--destaque); }
 .hora::placeholder { color: var(--mudo); font-weight: 500; }
 .numero { width: 76px; border: 0; background: var(--campo); border-radius: 10px; font-size: 16px; font-weight: 600; outline: none; text-align: right; padding: 8px 10px; }
 .nota { flex: 1; border: 0; background: none; font-size: 15px; font-weight: 500; outline: none; padding: 0; min-height: 44px; }
@@ -123,14 +123,14 @@ h1 { margin: 0; font-size: 28px; font-weight: 700; letter-spacing: -.02em; }
 /* ---------- Ações e abas ---------- */
 .acoes { flex: none; display: flex; align-items: center; gap: 16px; padding: 12px 24px; }
 .acoes:empty { display: none; }
-.primario { flex: 1; height: 52px; border: 0; border-radius: 14px; font-size: 16px; font-weight: 600; background: var(--primaria); color: #fff; transition: opacity .2s; }
-.primario:disabled { background: var(--borda-forte); }
+.primario { flex: 1; height: 52px; border: 0; border-radius: 14px; font-size: 16px; font-weight: 600; background: var(--primaria); color: var(--primaria-texto); transition: opacity .2s; }
+.primario:disabled { background: var(--borda-forte); color: var(--mudo); }
 .primario:active { opacity: .85; }
 .secundario { flex: 1; height: 52px; border: 1px solid var(--borda-forte); border-radius: 14px; font-size: 16px; font-weight: 600; background: none; }
 
 .abas { flex: none; display: grid; grid-template-columns: 1fr 1fr 1fr; padding: 8px 12px calc(10px + env(safe-area-inset-bottom)); border-top: 1px solid var(--borda); }
 .abas button { border: 0; background: none; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px 0; color: var(--mudo); }
-.abas button[aria-current="page"] { color: var(--primaria); }
+.abas button[aria-current="page"] { color: var(--destaque); }
 .abas svg { width: 22px; height: 22px; margin: 4px 0; stroke-width: 1.7; }
 .abas span { font-size: 11px; font-weight: 600; }
 
