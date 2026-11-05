@@ -1,6 +1,6 @@
 {
-  "name": "Ponto COMAU",
-  "short_name": "Ponto",
+  "name": "Ponto Automisa",
+  "short_name": "Ponto Automisa",
   "description": "Registro de horas e geração da planilha oficial COMAU, direto no aparelho.",
   "lang": "pt-BR",
   "start_url": "./",

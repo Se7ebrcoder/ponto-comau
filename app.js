@@ -506,7 +506,7 @@ function telaAjustes() {
       <span class="lbl-forte cresce">Restaurar de um backup</span>
       <button class="link" data-acao="restaurar">Restaurar</button>
     </div>
-    <p class="estado" style="text-align:center;margin-top:28px">Ponto COMAU · ${Object.keys(dados.registros).length} dias registrados</p>`;
+    <p class="estado" style="text-align:center;margin-top:28px">Ponto Automisa · ${Object.keys(dados.registros).length} dias registrados</p>`;
 }
 
 function salvarTaxaPadrao() {
@@ -549,7 +549,7 @@ async function restaurarBackup() {
   try {
     lido = JSON.parse(await arq.text());
     if (lido.app !== "ponto-comau" || typeof lido.registros !== "object") throw new Error();
-  } catch { return mostrarErro("Backup inválido", "O arquivo escolhido não é um backup do Ponto COMAU."); }
+  } catch { return mostrarErro("Backup inválido", "O arquivo escolhido não é um backup do Ponto Automisa."); }
   const qtd = Object.keys(lido.registros).length;
   if (!confirm(`Restaurar ${qtd} dias do backup de ${new Date(lido.exportadoEm).toLocaleDateString("pt-BR")}? Os registros atuais deste aparelho serão substituídos.`)) return;
   dados = { registros: lido.registros, config: { ...PADRAO.config, ...lido.config } };

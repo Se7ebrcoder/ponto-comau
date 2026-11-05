@@ -105,7 +105,7 @@ export async function desenharComprovante(dados) {
   // Rodapé
   ctx.fillStyle = COR.linha;
   ctx.fillRect(M, y + 24, L - 2 * M, 2);
-  texto(ctx, `Gerado em ${dados.geradoEm} pelo app Ponto COMAU`, M, y + 84, { peso: 500, tam: 22, cor: COR.mudo });
+  texto(ctx, `Gerado em ${dados.geradoEm} pelo app Ponto Automisa`, M, y + 84, { peso: 500, tam: 22, cor: COR.mudo });
   texto(ctx, `${dados.linhas.length} registros`, L - M, y + 84, { peso: 500, tam: 22, cor: COR.mudo, alinhar: "right" });
 
   return new Promise((resolve, reject) =>
