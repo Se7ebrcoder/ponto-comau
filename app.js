@@ -47,13 +47,16 @@ const fmtHM = (min) => `${pad(Math.floor(min / 60))}:${pad(min % 60)}`;
 const viraDia = (r) => horaOk(r.inicio) && horaOk(r.fim) && minutosDe(r.fim) < minutosDe(r.inicio);
 
 function lerTaxa(texto) {
-  const v = Number(String(texto ?? "").trim().replace(/\./g, "").replace(",", "."));
+  // Com vírgula, o ponto é separador de milhar (1.234,50); sem vírgula, é decimal (47.50).
+  const t = String(texto ?? "").trim();
+  const v = Number(t.includes(",") ? t.replace(/\./g, "").replace(",", ".") : t);
   return Number.isFinite(v) && v > 0 ? v : null;
 }
-const taxaTexto = (v) => (v == null ? "" : String(v).replace(".", ","));
+// Preço 0 fica com o campo vazio (mostra "0" de exemplo), para digitar sem precisar apagar.
+const taxaTexto = (v) => (!v ? "" : String(v).replace(".", ","));
 
 // ---------- Armazenamento (só neste aparelho) ----------
-const PADRAO = { registros: {}, config: { taxaPadrao: 50, centroPadrao: null, jantarPadrao: true, ultimoBackup: null } };
+const PADRAO = { registros: {}, config: { taxaPadrao: 0, centroPadrao: null, jantarPadrao: true, ultimoBackup: null } };
 let dados = carregar();
 let infoModelo = carregarModelo(); // { arquivo, importadoEm, funcionario, centros, base64 } ou null
 
@@ -190,7 +193,7 @@ function telaRegistrar() {
       <div class="linha">
         <span class="lbl cresce">Preço por hora</span>
         <span class="unidade">R$</span>
-        <input id="f-taxa" class="numero" inputmode="decimal" value="${taxaTexto(f.taxa)}" aria-label="Preço por hora">
+        <input id="f-taxa" class="numero" inputmode="decimal" value="${taxaTexto(f.taxa)}" placeholder="0" aria-label="Preço por hora">
       </div>
       <div class="linha">
         <input id="f-obs" class="nota" value="${esc(f.obs)}" maxlength="120" placeholder="Observação (opcional, vai para a planilha)" aria-label="Observação">
@@ -224,7 +227,7 @@ function validar(v) {
   if (v.fim && !horaOk(v.fim)) return `Horário de fim inválido ("${v.fim}"). Digite no formato hh:mm, ex.: 23:30.`;
   if (v.fim && v.fim === v.inicio) return "Início e fim não podem ser iguais.";
   if (v.fim && v.jantar && minutosTrabalhados({ ...v, jantar: false }) <= 60) return "O turno tem 1h ou menos: use pausa 0 ou corrija os horários.";
-  if (!v.taxa) return "Informe o preço por hora (ex.: 50 ou 47,50).";
+  if (!v.taxa) return "Informe o preço por hora (ex.: 50 ou 47,50). Para já vir preenchido, defina o padrão em Ajustes.";
   if (dados.registros[v.data] && v.data !== v.original) return `Já existe um registro em ${curta(v.data)}. Para alterá-lo, toque nele em Registros.`;
   return "";
 }
@@ -468,7 +471,7 @@ function telaAjustes() {
     <div class="linha">
       <span class="lbl-forte cresce">Preço por hora padrão</span>
       <span class="unidade">R$</span>
-      <input id="a-taxa" class="numero" inputmode="decimal" value="${taxaTexto(c.taxaPadrao)}" aria-label="Preço por hora padrão">
+      <input id="a-taxa" class="numero" inputmode="decimal" value="${taxaTexto(c.taxaPadrao)}" placeholder="0" aria-label="Preço por hora padrão">
     </div>
     <div class="linha alta">
       <div class="cresce pilha-v">
@@ -507,15 +510,18 @@ function telaAjustes() {
 }
 
 function salvarTaxaPadrao() {
-  const taxa = lerTaxa($("#a-taxa").value);
-  if (!taxa) { mostrarErro("Ajustes não salvos", "Informe o preço por hora (ex.: 50 ou 47,50)."); return null; }
+  // O padrão pode ficar em 0 (sem preço pré-preenchido); retorna null só se o texto for inválido.
+  const campo = $("#a-taxa").value.trim();
+  const taxa = /^0*([.,]0*)?$/.test(campo) ? 0 : lerTaxa(campo);
+  if (taxa === null) { mostrarErro("Ajustes não salvos", "Informe o preço por hora (ex.: 50 ou 47,50)."); return null; }
   dados.config.taxaPadrao = taxa;
   return salvar() ? taxa : null;
 }
 
 function aplicarTaxaAoMes() {
   const taxa = salvarTaxaPadrao();
-  if (!taxa) return;
+  if (taxa === null) return;
+  if (!taxa) return mostrarErro("Nada para aplicar", "Informe um preço por hora maior que zero (ex.: 50 ou 47,50).");
   const lista = registrosDoMes(ui.ano, ui.mes);
   if (!lista.length) return mostrarErro("Nada para alterar", `Não há registros em ${MESES[ui.mes - 1].toLowerCase()}/${ui.ano}.`);
   if (!confirm(`Aplicar ${reais.format(taxa)}/h aos ${lista.length} dias de ${MESES[ui.mes - 1].toLowerCase()}/${ui.ano}?`)) return;
@@ -604,7 +610,7 @@ document.addEventListener("click", (e) => {
     "alternar-tema": () => escolherTema(temaEfetivo() === "dark" ? "light" : "dark"),
     tema: () => escolherTema(alvo.dataset.valor),
     "pausa-padrao": () => { dados.config.jantarPadrao = !dados.config.jantarPadrao; if (salvar()) render(); },
-    "salvar-ajustes": () => { if (salvarTaxaPadrao()) { avisar("Ajustes salvos"); render(); } },
+    "salvar-ajustes": () => { if (salvarTaxaPadrao() !== null) { avisar("Ajustes salvos"); render(); } },
     "aplicar-taxa": aplicarTaxaAoMes,
     modelo: () => { fecharDialogo(); escolherModelo(); }, backup: fazerBackup, restaurar: restaurarBackup, fechar: fecharDialogo,
   };
