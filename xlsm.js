@@ -149,7 +149,7 @@ const MODELO_GME_INVALIDO = "O arquivo tem GME no nome, mas não está no format
  * Confere se o arquivo serve de modelo e extrai o que o app usa dele.
  * Qualquer planilha oficial já preenchida serve: os lançamentos são sobrescritos na geração.
  * O tipo vem do nome do arquivo: com "GME" no nome, é conferido no formato da GME.
- * Retorna { tipo, funcionario, centros, centroMaisUsado }.
+ * Retorna { tipo, funcionario, centros, centroMaisUsado, commessas }: as listas vêm da legenda do próprio modelo.
  */
 export async function lerModelo(JSZip, arquivo, nome = "") {
   let zip;
@@ -162,7 +162,13 @@ export async function lerModelo(JSZip, arquivo, nome = "") {
   const formatoGME = ws.formula("L3") === `SUM(H${LINHA_GME}:H${ULTIMA_GME})` && ws.formula("H9") === FORMULA_HORAS_GME;
   if (ehGME(nome)) {
     if (!formatoGME) throw new ErroPlanilha(MODELO_GME_INVALIDO);
-    return { tipo: "gme", funcionario: String(ws.atual("F2", sst) || "").trim(), centros: [], centroMaisUsado: null };
+    // Tabela COMESSAS da planilha (colunas R e S, abaixo do cabeçalho na linha 16).
+    const commessas = [];
+    for (let lin = 17; lin <= 60; lin++) {
+      const codigo = ws.atual(`R${lin}`, sst), linha = ws.atual(`S${lin}`, sst);
+      if (codigo !== null && codigo !== "") commessas.push({ codigo: String(codigo), linha: String(linha ?? "").trim() });
+    }
+    return { tipo: "gme", funcionario: String(ws.atual("F2", sst) || "").trim(), centros: [], centroMaisUsado: null, commessas };
   }
   if (formatoGME) throw new ErroPlanilha("Esta planilha está no formato da GME, mas não tem GME no nome do arquivo. Renomeie o arquivo incluindo GME e escolha de novo.");
   if (ws.formula("G44") !== "SUM(G12:G42)*24" || ws.formula("B12") !== "D9") throw new ErroPlanilha(MODELO_INVALIDO);
@@ -180,7 +186,7 @@ export async function lerModelo(JSZip, arquivo, nome = "") {
   }
   const centroMaisUsado = Object.entries(usos).sort((a, b) => b[1] - a[1])[0]?.[0] || centros[0];
   const funcionario = String(ws.atual("H5", sst) || "").trim();
-  return { tipo: "comau", funcionario, centros, centroMaisUsado };
+  return { tipo: "comau", funcionario, centros, centroMaisUsado, commessas: [] };
 }
 
 // ---------- geração da planilha ----------
@@ -248,7 +254,8 @@ class Planilha {
     const m = this.xml.match(this._re(ref));
     if (!m) return null;
     const tipo = (m[1].match(/t="(\w+)"/) || [])[1];
-    const v = ((m[2] || "").match(/<v>([\s\S]*?)<\/v>/) || [])[1];
+    // O Excel grava textos com espaço no fim como <v xml:space="preserve">.
+    const v = ((m[2] || "").match(/<v(?:\s[^>]*)?>([\s\S]*?)<\/v>/) || [])[1];
     if (v === undefined) return null;
     if (tipo === "s") return sst[Number(v)];
     if (tipo === "str" || tipo === "e") return desXml(v);

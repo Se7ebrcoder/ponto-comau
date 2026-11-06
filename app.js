@@ -110,6 +110,31 @@ function clienteInicial() {
 const modeloGME = () => ui.cliente === "gme";
 const taxaPadrao = () => (modeloGME() ? dados.config.taxaPadraoGME ?? dados.config.taxaPadrao : dados.config.taxaPadrao);
 
+// Opções do ponto, lidas da legenda de cada modelo.
+const centroPadrao = () => dados.config.centroPadrao || modelos.comau?.centros?.[0] || "";
+const listaCommessas = () => modelos.gme?.commessas || [];
+function rotuloCommessa(codigo) {
+  const item = listaCommessas().find((c) => c.codigo === String(codigo));
+  return item?.linha ? `${item.codigo} – ${item.linha}` : String(codigo);
+}
+const opcaoHtml = (valor, rotulo, atual) => `<option value="${esc(valor)}" ${valor === atual ? "selected" : ""}>${esc(rotulo)}</option>`;
+function campoCentro(id, atual, rotulo) {
+  const lista = [...new Set([...(modelos.comau?.centros || []), atual].filter(Boolean))];
+  return `<select id="${id}" class="opcao" aria-label="${rotulo}">${lista.map((c) => opcaoHtml(c, c.trim(), atual)).join("")}</select>`;
+}
+function campoCommessa(id, atual, rotulo) {
+  const lista = listaCommessas();
+  // Sem tabela no modelo, a commessa é digitada.
+  if (!lista.length) return `<input id="${id}" class="numero" inputmode="numeric" maxlength="12" value="${esc(atual)}" placeholder="—" aria-label="${rotulo}">`;
+  const valor = String(atual ?? "");
+  const conhecida = !valor || lista.some((c) => c.codigo === valor);
+  return `<select id="${id}" class="opcao" aria-label="${rotulo}">
+      ${opcaoHtml("", "Sem commessa", valor)}
+      ${lista.map((c) => opcaoHtml(c.codigo, rotuloCommessa(c.codigo), valor)).join("")}
+      ${conhecida ? "" : opcaoHtml(valor, valor, valor)}
+    </select>`;
+}
+
 function salvar() {
   try {
     localStorage.setItem(CHAVE, JSON.stringify(dados));
@@ -163,11 +188,11 @@ const ui = { aba: "registrar", ano: hoje.getFullYear(), mes: hoje.getMonth() + 1
 let form;
 const formNovo = (data = chaveData(new Date())) => ({
   data, inicio: "", fim: "", jantar: !modeloGME() && dados.config.jantarPadrao, almocoSaida: "", almocoVolta: "",
-  taxa: taxaPadrao(), commessa: dados.config.commessaPadrao || "", obs: "", original: null, alterado: false,
+  taxa: taxaPadrao(), commessa: dados.config.commessaPadrao || "", centro: centroPadrao(), obs: "", original: null, alterado: false,
 });
 const formDe = (r) => ({
   data: r.data, inicio: r.inicio || "", fim: r.fim || "", jantar: !!r.jantar, almocoSaida: r.almocoSaida || "", almocoVolta: r.almocoVolta || "",
-  taxa: r.taxa ?? taxaPadrao(), commessa: r.commessa ?? (dados.config.commessaPadrao || ""), obs: r.obs || "", original: r.data, alterado: false,
+  taxa: r.taxa ?? taxaPadrao(), commessa: r.commessa ?? (dados.config.commessaPadrao || ""), centro: r.centro || centroPadrao(), obs: r.obs || "", original: r.data, alterado: false,
 });
 function navegar(aba, { manterForm = false } = {}) {
   ui.aba = aba;
@@ -258,9 +283,12 @@ function telaRegistrar() {
         <span class="unidade">R$</span>
         <input id="f-taxa" class="numero" inputmode="decimal" value="${taxaTexto(f.taxa)}" placeholder="0" aria-label="Preço por hora">
       </div>
-      ${gme ? `<div class="linha">
-        <span class="lbl cresce">Commessa</span>
-        <input id="f-commessa" class="numero" inputmode="numeric" maxlength="12" value="${esc(f.commessa)}" placeholder="—" aria-label="Commessa">
+      ${gme ? `<div class="linha empilhada">
+        <span class="lbl">Commessa</span>
+        ${campoCommessa("f-commessa", f.commessa, "Commessa")}
+      </div>` : modelos.comau ? `<div class="linha empilhada">
+        <span class="lbl">Centro de custo</span>
+        ${campoCentro("f-centro", f.centro, "Centro de custo")}
       </div>` : ""}
       <div class="linha">
         <input id="f-obs" class="nota" value="${esc(f.obs)}" maxlength="120" placeholder="Observação (opcional, vai para a planilha)" aria-label="Observação">
@@ -281,6 +309,8 @@ function lerFormulario() {
     form.almocoSaida = $("#f-almoco-saida").value;
     form.almocoVolta = $("#f-almoco-volta").value;
     form.commessa = $("#f-commessa").value.trim();
+  } else {
+    form.centro = $("#f-centro")?.value ?? form.centro;
   }
 }
 
@@ -345,8 +375,8 @@ function salvarRegistro() {
   const erro = validar(form);
   if (erro) return mostrarErro("Não foi possível salvar", erro);
   if (form.original && form.original !== form.data) delete dados.registros[chaveRegistro(form.original, ui.cliente)];
-  const { data, inicio, fim, jantar, almocoSaida, almocoVolta, taxa, commessa, obs } = form;
-  const registro = { data, cliente: ui.cliente, inicio, fim, jantar, almocoSaida, almocoVolta, taxa, commessa, obs };
+  const { data, inicio, fim, jantar, almocoSaida, almocoVolta, taxa, commessa, centro, obs } = form;
+  const registro = { data, cliente: ui.cliente, inicio, fim, jantar, almocoSaida, almocoVolta, taxa, obs, ...(modeloGME() ? { commessa } : { centro }) };
   dados.registros[chaveRegistro(data, ui.cliente)] = registro;
   if (!salvar()) return;
   const editando = form.original;
@@ -378,7 +408,8 @@ function telaRegistros() {
     const d = dataDe(r.data);
     const completo = r.inicio && r.fim;
     const pausa = r.almocoSaida && r.almocoVolta ? `almoço ${r.almocoSaida}–${r.almocoVolta}` : r.jantar ? "pausa 60 min" : "sem pausa";
-    const meta = [completo ? `${fmtHM(minutosTrabalhados(r))} h` : "", pausa, modeloGME() && r.commessa ? `commessa ${r.commessa}` : "", r.obs].filter(Boolean).join(" · ");
+    const opcao = modeloGME() ? (r.commessa ? `commessa ${rotuloCommessa(r.commessa)}` : "") : (r.centro && r.centro !== centroPadrao() ? r.centro.trim() : "");
+    const meta = [completo ? `${fmtHM(minutosTrabalhados(r))} h` : "", pausa, opcao, r.obs].filter(Boolean).join(" · ");
     return `<li><button class="reg" data-acao="editar" data-data="${r.data}" aria-label="Editar ${curta(r.data)}">
         <span class="reg-dia"><b>${d.getDate()}</b><small>${SEMANA[d.getDay()]}</small></span>
         <span class="reg-meio">
@@ -419,15 +450,15 @@ async function escolherModelo() {
     buffer = await arq.arrayBuffer();
     lido = await lerModelo(window.JSZip, buffer, arq.name);
   } catch (e) { return mostrarErro("Modelo inválido", mensagemDe(e)); }
-  const novo = { arquivo: arq.name, importadoEm: new Date().toISOString(), funcionario: lido.funcionario, centros: lido.centros, base64: paraBase64(buffer) };
+  const novo = { arquivo: arq.name, importadoEm: new Date().toISOString(), funcionario: lido.funcionario, centros: lido.centros, commessas: lido.commessas, base64: paraBase64(buffer) };
   try { localStorage.setItem(lido.tipo === "gme" ? CHAVE_MODELO_GME : CHAVE_MODELO, JSON.stringify(novo)); } catch {
     return mostrarErro("Não foi possível salvar o modelo", "O armazenamento do aparelho está cheio ou bloqueado. Libere espaço e tente novamente.");
   }
   modelos[lido.tipo] = novo;
   ui.cliente = lido.tipo;
   dados.config.cliente = lido.tipo;
-  // O centro de custo da planilha COMAU é sempre o mais usado no modelo.
-  if (lido.centroMaisUsado) dados.config.centroPadrao = lido.centroMaisUsado;
+  // O centro de custo padrão começa no mais usado do modelo e depois pode ser trocado em Ajustes.
+  if (lido.centroMaisUsado && !lido.centros.includes(dados.config.centroPadrao)) dados.config.centroPadrao = lido.centroMaisUsado;
   salvar();
   pedirPersistencia();
   avisar(`Modelo ${NOME_CLIENTE[lido.tipo]} configurado`);
@@ -454,9 +485,9 @@ async function gerar() {
     const tipo = ui.cliente;
     const doMes = registrosDoMes(ano, mes);
     const r = await gerarPlanilha(window.JSZip, deBase64(info.base64), {
-      tipo, ano, mes, centroPadrao: dados.config.centroPadrao || info.centros[0], commessaPadrao: dados.config.commessaPadrao,
+      tipo, ano, mes, centroPadrao: centroPadrao(), commessaPadrao: dados.config.commessaPadrao,
       // Na GME, o fim de um turno do mês anterior pode cair no dia 1, por isso vão todos os registros do cliente.
-      registros: tipo === "gme" ? Object.values(dados.registros).filter((x) => x.cliente === "gme") : doMes.map((x) => ({ ...x, centro: null })),
+      registros: tipo === "gme" ? Object.values(dados.registros).filter((x) => x.cliente === "gme") : doMes,
     });
     const valor = doMes.filter((x) => x.fim).reduce((s, x) => s + valorDoDia(x), 0);
     const arquivo = new File([r.arquivo], nomeArquivo(ano, mes, info.funcionario, tipo), { type: tipo === "gme" ? MIME_XLSX : MIME_XLSM });
@@ -562,6 +593,16 @@ async function gerarSoComprovante() {
   }
 }
 
+// Modelo da GME guardado antes de existir a lista de commessas: lê a tabela do arquivo guardado.
+async function completarModelos() {
+  const m = modelos.gme;
+  if (!m || m.commessas) return;
+  try {
+    m.commessas = (await lerModelo(window.JSZip, deBase64(m.base64), m.arquivo)).commessas;
+    localStorage.setItem(CHAVE_MODELO_GME, JSON.stringify(m));
+  } catch { /* sem a lista, a commessa continua sendo digitada */ }
+}
+
 function escolherArquivo(aceita) {
   return new Promise((resolve) => {
     const input = $("#arquivo");
@@ -600,10 +641,13 @@ function telaAjustes() {
       <span class="unidade">R$</span>
       <input id="a-taxa" class="numero" inputmode="decimal" value="${taxaTexto(taxaPadrao())}" placeholder="0" aria-label="Preço por hora padrão">
     </div>
-    ${modeloGME() ? `<div class="linha">
-      <span class="lbl-forte cresce">Commessa padrão</span>
-      <input id="a-commessa" class="numero" inputmode="numeric" maxlength="12" value="${esc(c.commessaPadrao)}" placeholder="—" aria-label="Commessa padrão">
-    </div>` : `<div class="linha alta">
+    ${modeloGME() ? `<div class="linha empilhada">
+      <span class="lbl-forte">Commessa padrão</span>
+      ${campoCommessa("a-commessa", c.commessaPadrao, "Commessa padrão")}
+    </div>` : `${modelos.comau ? `<div class="linha empilhada">
+      <span class="lbl-forte">Centro de custo padrão</span>
+      ${campoCentro("a-centro", centroPadrao(), "Centro de custo padrão")}
+    </div>` : ""}<div class="linha alta">
       <div class="cresce pilha-v">
         <span class="lbl-forte">Pausa de 60 min por padrão</span>
         <span class="dica">Desmarque se costuma não jantar</span>
@@ -643,6 +687,8 @@ function salvarTaxaPadrao() {
   dados.config[modeloGME() ? "taxaPadraoGME" : "taxaPadrao"] = taxa;
   const commessa = $("#a-commessa");
   if (commessa) dados.config.commessaPadrao = commessa.value.trim();
+  const centro = $("#a-centro");
+  if (centro) dados.config.centroPadrao = centro.value;
   return salvar() ? taxa : null;
 }
 
@@ -689,6 +735,8 @@ async function restaurarBackup() {
   }
   ui.cliente = clienteInicial();
   if (salvar()) avisar(`${qtd} dias restaurados`);
+  await completarModelos();
+  form = formNovo();
   render();
 }
 
@@ -781,3 +829,4 @@ if ("serviceWorker" in navigator && location.protocol !== "file:") {
 
 aplicarTema();
 navegar("registrar");
+completarModelos().then(() => { if (!form.alterado && ui.aba === "registrar") navegar("registrar"); });
