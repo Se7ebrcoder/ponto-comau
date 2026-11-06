@@ -1,4 +1,4 @@
-import { ErroPlanilha, gerarPlanilha, lerModelo, minutosDe, nomeArquivo } from "./xlsm.js";
+import { ErroPlanilha, ehGME, gerarPlanilha, lerModelo, minutosDe, nomeArquivo, pausaMinutos } from "./xlsm.js";
 import { desenharComprovante } from "./comprovante.js";
 
 const CHAVE = "ponto-comau.v1";
@@ -7,6 +7,8 @@ const CHAVE_TEMA = "ponto-comau.tema";
 const MESES = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
 const SEMANA = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
 const MIME_XLSM = "application/vnd.ms-excel.sheet.macroEnabled.12";
+const MIME_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const ROTULO_GERAR = "Gerar planilha de horas";
 
 const $ = (sel, raiz = document) => raiz.querySelector(sel);
 const pad = (n) => String(n).padStart(2, "0");
@@ -35,11 +37,13 @@ function completarHora(el) {
 }
 
 // ---------- Cálculos ----------
+// Enquanto o almoço está sendo digitado, só vale quando os dois horários estão completos.
+const pausaDe = (r) => pausaMinutos(horaOk(r.almocoSaida) && horaOk(r.almocoVolta) ? r : { jantar: r.jantar });
 function minutosTrabalhados(r) {
   if (!horaOk(r.inicio) || !horaOk(r.fim)) return 0;
   let min = minutosDe(r.fim) - minutosDe(r.inicio);
   if (min < 0) min += 1440;
-  return Math.max(0, min - (r.jantar ? 60 : 0));
+  return Math.max(0, min - pausaDe(r));
 }
 // Valor de cada dia arredondado a centavos, como no informe; o mês soma os dias.
 const valorDoDia = (r) => Math.round((minutosTrabalhados(r) / 60) * (r.taxa || 0) * 100) / 100;
@@ -56,7 +60,7 @@ function lerTaxa(texto) {
 const taxaTexto = (v) => (!v ? "" : String(v).replace(".", ","));
 
 // ---------- Armazenamento (só neste aparelho) ----------
-const PADRAO = { registros: {}, config: { taxaPadrao: 0, centroPadrao: null, jantarPadrao: true, ultimoBackup: null } };
+const PADRAO = { registros: {}, config: { taxaPadrao: 0, centroPadrao: null, jantarPadrao: true, commessaPadrao: "", ultimoBackup: null } };
 let dados = carregar();
 let infoModelo = carregarModelo(); // { arquivo, importadoEm, funcionario, centros, base64 } ou null
 
@@ -71,6 +75,9 @@ function carregar() {
 function carregarModelo() {
   try { return JSON.parse(localStorage.getItem(CHAVE_MODELO)); } catch { return null; }
 }
+
+// Com um modelo da GME (reconhecido pelo nome do arquivo), o ponto pede almoço e commessa.
+const modeloGME = () => ehGME(infoModelo?.arquivo);
 
 function salvar() {
   try {
@@ -124,11 +131,12 @@ const ui = { aba: "registrar", ano: hoje.getFullYear(), mes: hoje.getMonth() + 1
 // registro em edição, aberto pela lista de Registros (ou null se novo).
 let form;
 const formNovo = (data = chaveData(new Date())) => ({
-  data, inicio: "", fim: "", jantar: dados.config.jantarPadrao, taxa: dados.config.taxaPadrao, obs: "", original: null, alterado: false,
+  data, inicio: "", fim: "", jantar: !modeloGME() && dados.config.jantarPadrao, almocoSaida: "", almocoVolta: "",
+  taxa: dados.config.taxaPadrao, commessa: dados.config.commessaPadrao || "", obs: "", original: null, alterado: false,
 });
 const formDe = (r) => ({
-  data: r.data, inicio: r.inicio || "", fim: r.fim || "", jantar: !!r.jantar, taxa: r.taxa ?? dados.config.taxaPadrao,
-  obs: r.obs || "", original: r.data, alterado: false,
+  data: r.data, inicio: r.inicio || "", fim: r.fim || "", jantar: !!r.jantar, almocoSaida: r.almocoSaida || "", almocoVolta: r.almocoVolta || "",
+  taxa: r.taxa ?? dados.config.taxaPadrao, commessa: r.commessa ?? (dados.config.commessaPadrao || ""), obs: r.obs || "", original: r.data, alterado: false,
 });
 function navegar(aba, { manterForm = false } = {}) {
   ui.aba = aba;
@@ -143,7 +151,7 @@ function render() {
   const telas = {
     registrar: ["Registrar", cap(new Date().toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "long" })), telaRegistrar,
       '<button class="link mudo" data-acao="limpar">Limpar</button><button class="primario" data-acao="salvar">Salvar</button>'],
-    registros: ["Registros", "Horas do mês", telaRegistros, '<button class="primario" data-acao="gerar">Gerar planilha COMAU</button>'],
+    registros: ["Registros", "Horas do mês", telaRegistros, `<button class="primario" data-acao="gerar">${ROTULO_GERAR}</button>`],
     ajustes: ["Ajustes", "Preferências do app", telaAjustes, ""],
   };
   const [titulo, sub, tela, acoes] = telas[ui.aba];
@@ -160,8 +168,17 @@ function render() {
 const campoHora = (id, valor, rotulo) => `<input type="text" id="${id}" class="hora" value="${valor}"
   inputmode="numeric" pattern="[0-9]*" maxlength="5" placeholder="--:--" autocomplete="off" enterkeyhint="next" aria-label="${rotulo}">`;
 
+const linhaHora = (campo, valor, rotulo) => `<div class="linha">
+        <span class="lbl cresce">${rotulo}</span>
+        ${campoHora(`f-${campo}`, valor, rotulo)}
+        <button class="link" data-acao="agora" data-campo="${campo}">Agora</button>
+      </div>`;
+
 function telaRegistrar() {
   const f = form;
+  const gme = modeloGME();
+  const pausaPendente = gme && f.original && f.jantar && !f.almocoSaida;
+  const comPausa = f.jantar || (f.almocoSaida && f.almocoVolta);
   return `<div class="total">
       <span class="rotulo">Valor total</span>
       <span class="grande" id="c-valor">R$ 0,00</span>
@@ -173,33 +190,34 @@ function telaRegistrar() {
         <span class="valor" id="c-data"></span>
         <input type="date" id="f-data" value="${f.data}" aria-label="Data">
       </label>
-      <div class="linha">
-        <span class="lbl cresce">Início</span>
-        ${campoHora("f-inicio", f.inicio, "Início")}
-        <button class="link" data-acao="agora" data-campo="inicio">Agora</button>
-      </div>
+      ${linhaHora("inicio", f.inicio, "Início")}
+      ${gme ? `${linhaHora("almoco-saida", f.almocoSaida, "Saída almoço")}${linhaHora("almoco-volta", f.almocoVolta, "Volta almoço")}` : ""}
       <div class="linha">
         <span class="lbl cresce">Fim <span class="mais1" id="c-mais1" hidden>+1</span></span>
         ${campoHora("f-fim", f.fim, "Fim")}
         <button class="link" data-acao="agora" data-campo="fim">Agora</button>
       </div>
-      <div class="linha">
+      ${gme ? "" : `<div class="linha">
         <span class="lbl">Pausa (min)</span>
         <div class="seg" role="group" aria-label="Pausa">
-          <button data-acao="pausa" data-valor="0" aria-pressed="${!f.jantar}">0</button>
-          <button data-acao="pausa" data-valor="60" aria-pressed="${f.jantar}">60</button>
+          <button data-acao="pausa" data-valor="0" aria-pressed="${!comPausa}">0</button>
+          <button data-acao="pausa" data-valor="60" aria-pressed="${!!comPausa}">60</button>
         </div>
-      </div>
+      </div>`}
       <div class="linha">
         <span class="lbl cresce">Preço por hora</span>
         <span class="unidade">R$</span>
         <input id="f-taxa" class="numero" inputmode="decimal" value="${taxaTexto(f.taxa)}" placeholder="0" aria-label="Preço por hora">
       </div>
+      ${gme ? `<div class="linha">
+        <span class="lbl cresce">Commessa</span>
+        <input id="f-commessa" class="numero" inputmode="numeric" maxlength="12" value="${esc(f.commessa)}" placeholder="—" aria-label="Commessa">
+      </div>` : ""}
       <div class="linha">
         <input id="f-obs" class="nota" value="${esc(f.obs)}" maxlength="120" placeholder="Observação (opcional, vai para a planilha)" aria-label="Observação">
       </div>
     </div>
-    <p class="estado">${f.original ? `Editando o registro de ${curta(f.original)}` : "Novo registro"}</p>
+    <p class="estado">${f.original ? `Editando o registro de ${curta(f.original)}` : "Novo registro"}${pausaPendente ? ". Este dia tinha pausa de 60 min: informe a saída e a volta do almoço." : ""}</p>
     ${f.original ? '<button class="link perigo" data-acao="excluir">Excluir este dia</button>' : ""}`;
 }
 
@@ -209,6 +227,12 @@ function lerFormulario() {
   form.fim = $("#f-fim").value;
   form.obs = $("#f-obs").value.trim();
   form.taxa = lerTaxa($("#f-taxa").value);
+  if (modeloGME()) {
+    form.jantar = false;
+    form.almocoSaida = $("#f-almoco-saida").value;
+    form.almocoVolta = $("#f-almoco-volta").value;
+    form.commessa = $("#f-commessa").value.trim();
+  }
 }
 
 function atualizarCalculo() {
@@ -227,8 +251,22 @@ function validar(v) {
   if (v.fim && !horaOk(v.fim)) return `Horário de fim inválido ("${v.fim}"). Digite no formato hh:mm, ex.: 23:30.`;
   if (v.fim && v.fim === v.inicio) return "Início e fim não podem ser iguais.";
   if (v.fim && v.jantar && minutosTrabalhados({ ...v, jantar: false }) <= 60) return "O turno tem 1h ou menos: use pausa 0 ou corrija os horários.";
+  const erroAlmoco = validarAlmoco(v);
+  if (erroAlmoco) return erroAlmoco;
   if (!v.taxa) return "Informe o preço por hora (ex.: 50 ou 47,50). Para já vir preenchido, defina o padrão em Ajustes.";
   if (dados.registros[v.data] && v.data !== v.original) return `Já existe um registro em ${curta(v.data)}. Para alterá-lo, toque nele em Registros.`;
+  return "";
+}
+
+function validarAlmoco({ inicio, fim, almocoSaida: saida, almocoVolta: volta }) {
+  if (saida && !horaOk(saida)) return `Saída do almoço inválida ("${saida}"). Digite no formato hh:mm, ex.: 12:00.`;
+  if (volta && !horaOk(volta)) return `Volta do almoço inválida ("${volta}"). Digite no formato hh:mm, ex.: 13:00.`;
+  if (volta && !saida) return "Informe a saída do almoço.";
+  if (saida && !volta && fim) return "Informe a volta do almoço.";
+  if (!saida || !volta) return "";
+  const rel = (h) => (minutosDe(h) - minutosDe(inicio) + 1440) % 1440;
+  if (rel(saida) === 0 || rel(volta) <= rel(saida) || (fim && rel(volta) >= rel(fim)))
+    return "O almoço precisa ficar dentro do turno: depois do início e antes do fim.";
   return "";
 }
 
@@ -237,8 +275,8 @@ function salvarRegistro() {
   const erro = validar(form);
   if (erro) return mostrarErro("Não foi possível salvar", erro);
   if (form.original && form.original !== form.data) delete dados.registros[form.original];
-  const { data, inicio, fim, jantar, taxa, obs } = form;
-  dados.registros[data] = { data, inicio, fim, jantar, taxa, obs };
+  const { data, inicio, fim, jantar, almocoSaida, almocoVolta, taxa, commessa, obs } = form;
+  dados.registros[data] = { data, inicio, fim, jantar, almocoSaida, almocoVolta, taxa, commessa, obs };
   if (!salvar()) return;
   const editando = form.original;
   avisar(fim ? `${curta(data)} salvo · ${fmtHM(minutosTrabalhados(dados.registros[data]))} h` : `Início salvo às ${inicio}`);
@@ -268,7 +306,8 @@ function telaRegistros() {
   const itens = lista.map((r) => {
     const d = dataDe(r.data);
     const completo = r.inicio && r.fim;
-    const meta = [completo ? `${fmtHM(minutosTrabalhados(r))} h` : "", r.jantar ? "pausa 60 min" : "sem pausa", r.obs].filter(Boolean).join(" · ");
+    const pausa = r.almocoSaida && r.almocoVolta ? `almoço ${r.almocoSaida}–${r.almocoVolta}` : r.jantar ? "pausa 60 min" : "sem pausa";
+    const meta = [completo ? `${fmtHM(minutosTrabalhados(r))} h` : "", pausa, modeloGME() && r.commessa ? `commessa ${r.commessa}` : "", r.obs].filter(Boolean).join(" · ");
     return `<li><button class="reg" data-acao="editar" data-data="${r.data}" aria-label="Editar ${curta(r.data)}">
         <span class="reg-dia"><b>${d.getDate()}</b><small>${SEMANA[d.getDay()]}</small></span>
         <span class="reg-meio">
@@ -302,20 +341,20 @@ function mudarMes(delta) {
 
 // ---------- Gerar planilha ----------
 async function escolherModelo() {
-  const arq = await escolherArquivo(".xlsm,application/vnd.ms-excel.sheet.macroEnabled.12");
+  const arq = await escolherArquivo(`.xlsm,.xlsx,${MIME_XLSM},${MIME_XLSX}`);
   if (!arq) return;
   let buffer, lido;
   try {
     buffer = await arq.arrayBuffer();
-    lido = await lerModelo(window.JSZip, buffer);
+    lido = await lerModelo(window.JSZip, buffer, arq.name);
   } catch (e) { return mostrarErro("Modelo inválido", mensagemDe(e)); }
   const novo = { arquivo: arq.name, importadoEm: new Date().toISOString(), funcionario: lido.funcionario, centros: lido.centros, base64: paraBase64(buffer) };
   try { localStorage.setItem(CHAVE_MODELO, JSON.stringify(novo)); } catch {
     return mostrarErro("Não foi possível salvar o modelo", "O armazenamento do aparelho está cheio ou bloqueado. Libere espaço e tente novamente.");
   }
   infoModelo = novo;
-  // O centro de custo da planilha é sempre o mais usado no modelo.
-  dados.config.centroPadrao = lido.centroMaisUsado;
+  // O centro de custo da planilha COMAU é sempre o mais usado no modelo.
+  if (lido.centroMaisUsado) dados.config.centroPadrao = lido.centroMaisUsado;
   salvar();
   pedirPersistencia();
   avisar("Modelo configurado");
@@ -327,7 +366,7 @@ async function gerar() {
   if (!infoModelo) {
     return abrirDialogo(`<div class="folha">
         <h2>Escolha o modelo da planilha</h2>
-        <p class="sub-folha">Selecione no app Arquivos uma planilha COMAU de qualquer mês (.xlsm). Ela fica guardada só neste aparelho e serve de base para as próximas.</p>
+        <p class="sub-folha">Selecione no app Arquivos uma planilha de horas de qualquer mês (COMAU ou GME). Ela fica guardada só neste aparelho e serve de base para as próximas.</p>
         <div class="pilha">
           <button class="primario" data-acao="modelo">Escolher planilha modelo</button>
           <button class="secundario" data-acao="fechar">Agora não</button>
@@ -338,18 +377,21 @@ async function gerar() {
   botao.disabled = true;
   botao.textContent = "Gerando…";
   try {
-    const registros = registrosDoMes(ano, mes).map((r) => ({ ...r, centro: null }));
+    const tipo = modeloGME() ? "gme" : "comau";
+    const doMes = registrosDoMes(ano, mes);
     const r = await gerarPlanilha(window.JSZip, deBase64(infoModelo.base64), {
-      ano, mes, centroPadrao: dados.config.centroPadrao || infoModelo.centros[0], registros,
+      tipo, ano, mes, centroPadrao: dados.config.centroPadrao || infoModelo.centros[0], commessaPadrao: dados.config.commessaPadrao,
+      // Na GME, o fim de um turno do mês anterior pode cair no dia 1, por isso vão todos os registros.
+      registros: tipo === "gme" ? Object.values(dados.registros) : doMes.map((x) => ({ ...x, centro: null })),
     });
-    const valor = registros.filter((x) => x.fim).reduce((s, x) => s + valorDoDia(x), 0);
-    const arquivo = new File([r.arquivo], nomeArquivo(ano, mes, infoModelo.funcionario), { type: MIME_XLSM });
+    const valor = doMes.filter((x) => x.fim).reduce((s, x) => s + valorDoDia(x), 0);
+    const arquivo = new File([r.arquivo], nomeArquivo(ano, mes, infoModelo.funcionario, tipo), { type: tipo === "gme" ? MIME_XLSX : MIME_XLSM });
     // O comprovante já fica pronto aqui: o iPhone só compartilha arquivos prontos no toque do botão.
     const comprovante = await criarComprovante(ano, mes);
     abrirDialogo(`<div class="folha">
         <div class="icone-resultado ok"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></div>
         <h2>Planilha gerada</h2>
-        <p class="sub-folha">${esc(arquivo.name)}<br>+ comprovante com os ${registros.length} dias registrados</p>
+        <p class="sub-folha">${esc(arquivo.name)}<br>+ comprovante com os ${doMes.length} dias registrados</p>
         <div class="estatisticas" style="margin-bottom:20px">
           <div><span class="rotulo">Dias</span><span class="estat">${r.dias}</span></div>
           <div><span class="rotulo">Horas</span><span class="estat">${fmtHM(Math.round(r.totalHoras * 60))}</span></div>
@@ -367,7 +409,7 @@ async function gerar() {
     mostrarErro("Não foi possível gerar a planilha", mensagemDe(e));
   } finally {
     botao.disabled = false;
-    botao.textContent = "Gerar planilha COMAU";
+    botao.textContent = ROTULO_GERAR;
   }
 }
 
@@ -402,15 +444,13 @@ async function criarComprovante(ano, mes) {
     totais: {
       dias: completos.length,
       horas: fmtHM(completos.reduce((s, r) => s + minutosTrabalhados(r), 0)),
-      valor: reais.format(completos.reduce((s, r) => s + valorDoDia(r), 0)),
     },
     linhas: lista.map((r) => {
       const d = dataDe(r.data);
       return {
         dia: pad(d.getDate()), semana: SEMANA[d.getDay()],
         faixa: `${r.inicio || "--:--"} – ${r.fim || "--:--"}`, mais1: viraDia(r),
-        pausa: r.jantar ? "60 min" : "0 min", horas: fmtHM(minutosTrabalhados(r)),
-        valor: reais.format(valorDoDia(r)), obs: r.obs || "", semFim: !r.fim,
+        pausa: `${pausaDe(r)} min`, horas: fmtHM(minutosTrabalhados(r)), obs: r.obs || "", semFim: !r.fim,
       };
     }),
   });
@@ -473,13 +513,16 @@ function telaAjustes() {
       <span class="unidade">R$</span>
       <input id="a-taxa" class="numero" inputmode="decimal" value="${taxaTexto(c.taxaPadrao)}" placeholder="0" aria-label="Preço por hora padrão">
     </div>
-    <div class="linha alta">
+    ${modeloGME() ? `<div class="linha">
+      <span class="lbl-forte cresce">Commessa padrão</span>
+      <input id="a-commessa" class="numero" inputmode="numeric" maxlength="12" value="${esc(c.commessaPadrao)}" placeholder="—" aria-label="Commessa padrão">
+    </div>` : `<div class="linha alta">
       <div class="cresce pilha-v">
         <span class="lbl-forte">Pausa de 60 min por padrão</span>
         <span class="dica">Desmarque se costuma não jantar</span>
       </div>
       <button class="interruptor" data-acao="pausa-padrao" role="switch" aria-checked="${c.jantarPadrao}" aria-label="Pausa de 60 minutos por padrão"><span></span></button>
-    </div>
+    </div>`}
     <div class="linha">
       <button class="link encostado" data-acao="aplicar-taxa">Aplicar preço a ${MESES[ui.mes - 1].toLowerCase()}</button>
       <button class="link" data-acao="salvar-ajustes">Salvar</button>
@@ -489,7 +532,7 @@ function telaAjustes() {
     <div class="linha alta">
       <div class="cresce pilha-v">
         <span class="lbl-forte reticencias">${infoModelo ? esc(infoModelo.arquivo) : "Nenhum modelo escolhido"}</span>
-        <span class="dica">${infoModelo ? `Escolhido em ${new Date(infoModelo.importadoEm).toLocaleDateString("pt-BR")} · fica só neste aparelho` : "Qualquer planilha COMAU já feita serve"}</span>
+        <span class="dica">${infoModelo ? `Escolhido em ${new Date(infoModelo.importadoEm).toLocaleDateString("pt-BR")} · fica só neste aparelho` : "Qualquer planilha de horas já feita serve (COMAU ou GME)"}</span>
       </div>
       <button class="link" data-acao="modelo">${infoModelo ? "Trocar" : "Escolher"}</button>
     </div>
@@ -515,6 +558,8 @@ function salvarTaxaPadrao() {
   const taxa = /^0*([.,]0*)?$/.test(campo) ? 0 : lerTaxa(campo);
   if (taxa === null) { mostrarErro("Ajustes não salvos", "Informe o preço por hora (ex.: 50 ou 47,50)."); return null; }
   dados.config.taxaPadrao = taxa;
+  const commessa = $("#a-commessa");
+  if (commessa) dados.config.commessaPadrao = commessa.value.trim();
   return salvar() ? taxa : null;
 }
 
@@ -600,6 +645,7 @@ document.addEventListener("click", (e) => {
     agora: () => { $(`#f-${alvo.dataset.campo}`).value = horaAgora(); form.alterado = true; atualizarCalculo(); },
     pausa: () => {
       form.jantar = alvo.dataset.valor === "60";
+      form.almocoSaida = form.almocoVolta = "";
       form.alterado = true;
       alvo.parentElement.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b === alvo)));
       atualizarCalculo();
@@ -622,8 +668,10 @@ document.addEventListener("input", (e) => {
   form.alterado = true;
   if (e.target.classList.contains("hora")) {
     mascaraHora(e.target);
-    // Início completo: pula para o fim.
-    if (e.target.id === "f-inicio" && horaOk(e.target.value) && !$("#f-fim").value) $("#f-fim").focus();
+    // Horário completo: pula para o próximo campo de hora vazio, na ordem da tela.
+    const campos = [...document.querySelectorAll(".hora")];
+    const proximo = campos[campos.indexOf(e.target) + 1];
+    if (horaOk(e.target.value) && proximo && !proximo.value) proximo.focus();
   }
   atualizarCalculo();
 });

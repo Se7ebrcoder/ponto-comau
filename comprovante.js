@@ -5,7 +5,7 @@ const L = 1080;          // largura da imagem (px)
 const M = 64;            // margem lateral
 const COR = {
   fundo: "#ffffff", texto: "#111111", mudo: "#625a5a", linha: "#ece8e8", listra: "#f8f6f6",
-  destaque: "#c2410c", azul: "#1d4ed8", dinheiro: "#1d7a3e", perigo: "#b3261e",
+  destaque: "#c2410c", azul: "#1d4ed8", perigo: "#b3261e",
 };
 const FONTE = "Manrope, -apple-system, system-ui, sans-serif";
 const ALTURA_LINHA = 76;
@@ -30,7 +30,7 @@ function cortar(ctx, t, larguraMax) {
 /**
  * dados = {
  *   funcionario, titulo ("Outubro de 2026"), geradoEm ("01/11/2026 às 10:52"),
- *   totais: { dias, horas, valor }, linhas: [{ dia, semana, faixa, mais1, pausa, horas, valor, obs, semFim }]
+ *   totais: { dias, horas }, linhas: [{ dia, semana, faixa, mais1, pausa, horas, obs, semFim }]
  * }
  * Retorna um Blob PNG.
  */
@@ -57,19 +57,19 @@ export async function desenharComprovante(dados) {
   texto(ctx, dados.titulo, M, 212, { peso: 500, tam: 30, cor: COR.mudo });
 
   // Totais
-  const colunas = [["Dias", String(dados.totais.dias)], ["Horas", dados.totais.horas], ["Total", dados.totais.valor]];
-  const xs = [M, M + 220, M + 500];
+  const colunas = [["Dias", String(dados.totais.dias)], ["Horas", dados.totais.horas]];
+  const xs = [M, M + 220];
   colunas.forEach(([rotulo, valor], i) => {
     texto(ctx, rotulo, xs[i], 290, { peso: 500, tam: 24, cor: COR.mudo });
-    texto(ctx, valor, xs[i], 350, { peso: 400, tam: 48, cor: i === 2 ? COR.dinheiro : COR.texto });
+    texto(ctx, valor, xs[i], 350, { peso: 400, tam: 48 });
   });
   ctx.fillStyle = COR.linha;
   ctx.fillRect(M, 396, L - 2 * M, 2);
 
   // Cabeçalho da tabela
-  const X = { dia: M, faixa: M + 136, pausa: M + 500, horas: M + 726, valor: L - M };
+  const X = { dia: M, faixa: M + 136, pausa: M + 580, horas: L - M };
   ctx.letterSpacing = "2px";
-  [["DIA", X.dia, "left"], ["HORÁRIO", X.faixa, "left"], ["PAUSA", X.pausa, "left"], ["HORAS", X.horas, "right"], ["VALOR", X.valor, "right"]]
+  [["DIA", X.dia, "left"], ["HORÁRIO", X.faixa, "left"], ["PAUSA", X.pausa, "left"], ["HORAS", X.horas, "right"]]
     .forEach(([t, x, a]) => texto(ctx, t, x, 452, { peso: 600, tam: 20, cor: COR.mudo, alinhar: a }));
   ctx.letterSpacing = "0px";
 
@@ -89,12 +89,8 @@ export async function desenharComprovante(dados) {
       texto(ctx, "+1", cx + 22, base - 3, { peso: 700, tam: 18, cor: COR.azul, alinhar: "center" });
     }
     texto(ctx, l.pausa, X.pausa, base, { peso: 500, tam: 26, cor: COR.mudo });
-    if (l.semFim) {
-      texto(ctx, "sem fim", X.valor, base, { peso: 600, tam: 26, cor: COR.perigo, alinhar: "right" });
-    } else {
-      texto(ctx, l.horas, X.horas, base, { peso: 600, tam: 30, alinhar: "right" });
-      texto(ctx, l.valor, X.valor, base, { peso: 600, tam: 28, cor: COR.dinheiro, alinhar: "right" });
-    }
+    if (l.semFim) texto(ctx, "sem fim", X.horas, base, { peso: 600, tam: 26, cor: COR.perigo, alinhar: "right" });
+    else texto(ctx, l.horas, X.horas, base, { peso: 600, tam: 30, alinhar: "right" });
     if (l.obs) {
       ctx.font = fonte(500, 22);
       texto(ctx, cortar(ctx, l.obs, L - 2 * M - 136), X.faixa, base + 32, { peso: 500, tam: 22, cor: COR.mudo });
