@@ -547,6 +547,7 @@ async function criarComprovante(ano, mes) {
   const imagem = await desenharComprovante({
     funcionario,
     titulo: `${MESES[mes - 1]} de ${ano}${dois ? ` · ${NOME_CLIENTE[ui.cliente]}` : ""}`,
+    coluna: modeloGME() ? "COMMESSA" : "EQUIPE",
     geradoEm: `${agora.toLocaleDateString("pt-BR")} às ${horaAgora()}`,
     totais: {
       dias: completos.length,
@@ -558,6 +559,7 @@ async function criarComprovante(ano, mes) {
         dia: pad(d.getDate()), semana: SEMANA[d.getDay()],
         faixa: `${r.inicio || "--:--"} – ${r.fim || "--:--"}`, mais1: viraDia(r),
         pausa: `${pausaDe(r)} min`, horas: fmtHM(minutosTrabalhados(r)), obs: r.obs || "", semFim: !r.fim,
+        opcao: modeloGME() ? (r.commessa ? rotuloCommessa(r.commessa) : "—") : (r.centro || centroPadrao() || "—").trim(),
       };
     }),
   });

@@ -30,7 +30,8 @@ function cortar(ctx, t, larguraMax) {
 /**
  * dados = {
  *   funcionario, titulo ("Outubro de 2026"), geradoEm ("01/11/2026 às 10:52"),
- *   totais: { dias, horas }, linhas: [{ dia, semana, faixa, mais1, pausa, horas, obs, semFim }]
+ *   coluna ("EQUIPE" ou "COMMESSA"), totais: { dias, horas },
+ *   linhas: [{ dia, semana, faixa, mais1, pausa, opcao, horas, obs, semFim }]
  * }
  * Retorna um Blob PNG.
  */
@@ -67,9 +68,10 @@ export async function desenharComprovante(dados) {
   ctx.fillRect(M, 396, L - 2 * M, 2);
 
   // Cabeçalho da tabela
-  const X = { dia: M, faixa: M + 136, pausa: M + 580, horas: L - M };
+  const X = { dia: M, faixa: M + 136, pausa: M + 396, opcao: M + 508, horas: L - M };
+  const larguraOpcao = X.horas - 96 - X.opcao;
   ctx.letterSpacing = "2px";
-  [["DIA", X.dia, "left"], ["HORÁRIO", X.faixa, "left"], ["PAUSA", X.pausa, "left"], ["HORAS", X.horas, "right"]]
+  [["DIA", X.dia, "left"], ["HORÁRIO", X.faixa, "left"], ["PAUSA", X.pausa, "left"], [dados.coluna, X.opcao, "left"], ["HORAS", X.horas, "right"]]
     .forEach(([t, x, a]) => texto(ctx, t, x, 452, { peso: 600, tam: 20, cor: COR.mudo, alinhar: a }));
   ctx.letterSpacing = "0px";
 
@@ -88,7 +90,9 @@ export async function desenharComprovante(dados) {
       ctx.beginPath(); ctx.roundRect(cx, base - 24, 44, 28, 7); ctx.stroke();
       texto(ctx, "+1", cx + 22, base - 3, { peso: 700, tam: 18, cor: COR.azul, alinhar: "center" });
     }
-    texto(ctx, l.pausa, X.pausa, base, { peso: 500, tam: 26, cor: COR.mudo });
+    texto(ctx, l.pausa, X.pausa, base, { peso: 500, tam: 24, cor: COR.mudo });
+    ctx.font = fonte(500, 22);
+    texto(ctx, cortar(ctx, l.opcao, larguraOpcao), X.opcao, base, { peso: 500, tam: 22 });
     if (l.semFim) texto(ctx, "sem fim", X.horas, base, { peso: 600, tam: 26, cor: COR.perigo, alinhar: "right" });
     else texto(ctx, l.horas, X.horas, base, { peso: 600, tam: 30, alinhar: "right" });
     if (l.obs) {
