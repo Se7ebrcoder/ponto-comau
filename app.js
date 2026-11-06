@@ -66,9 +66,12 @@ const ARQUIVO_BACKUP = "backup-pontos.json";
 const PASTA_BACKUP = "Backup Pontos";
 const INTERVALO_BACKUP = 24 * 60 * 60 * 1000;
 const ADIAMENTO_BACKUP = 6 * 60 * 60 * 1000; // "Depois": o lembrete volta em 6 horas
+// No Android, o navegador pode gravar direto numa pasta; se não puder, o arquivo vai para Downloads.
+const ehAndroid = /Android/i.test(navigator.userAgent);
+const temPastaNoAparelho = ehAndroid && !!window.showDirectoryPicker;
 
 // ---------- Armazenamento (só neste aparelho) ----------
-const PADRAO = { registros: {}, config: { taxaPadrao: 0, centroPadrao: null, jantarPadrao: true, commessaPadrao: "", ultimoBackup: null, lembreteBackup: null, alteradoEm: null } };
+const PADRAO = { registros: {}, config: { taxaPadrao: 0, centroPadrao: null, jantarPadrao: true, commessaPadrao: "", ultimoBackup: null, lembreteBackup: null, alteradoEm: null, pastaBackup: null, pastaFalhou: false } };
 let dados = carregar();
 let modelos = carregarModelos(); // { comau, gme }: cada um { arquivo, importadoEm, funcionario, centros, base64 } ou null
 
@@ -534,6 +537,11 @@ async function entregarArquivos(arquivos) {
     try { await navigator.share({ files: arquivos }); return true; }
     catch (e) { if (e.name === "AbortError") return false; }
   }
+  await baixarArquivos(arquivos);
+  return true;
+}
+
+async function baixarArquivos(arquivos) {
   for (const arquivo of arquivos) {
     const url = URL.createObjectURL(arquivo);
     const a = Object.assign(document.createElement("a"), { href: url, download: arquivo.name });
@@ -543,7 +551,6 @@ async function entregarArquivos(arquivos) {
     setTimeout(() => URL.revokeObjectURL(url), 30000);
     await new Promise((r) => setTimeout(r, 400));
   }
-  return true;
 }
 
 // ---------- Comprovante do mês ----------
@@ -690,11 +697,18 @@ function telaAjustes() {
       </div>
       <button class="interruptor" data-acao="lembrete-backup" role="switch" aria-checked="${c.lembreteBackup === true}" aria-label="Lembrete de backup a cada 24 horas"><span></span></button>
     </div>
+    ${temPastaNoAparelho ? `<div class="linha alta">
+      <div class="cresce pilha-v">
+        <span class="lbl-forte">Pasta do backup</span>
+        <span class="dica reticencias">${esc(descricaoPasta())}</span>
+      </div>
+      <button class="link" data-acao="backup-trocar-pasta">Escolher</button>
+    </div>` : ""}
     <div class="linha">
       <span class="lbl-forte cresce">Restaurar de um backup</span>
       <button class="link" data-acao="restaurar">Restaurar</button>
     </div>
-    <p class="dica" style="margin:10px 0 0">O arquivo tem sempre o mesmo nome. Salve na pasta ${PASTA_BACKUP} e confirme a substituição do anterior. Ele contém seus dados e modelos: guarde em local privado.</p>
+    <p class="dica" style="margin:10px 0 0">${dicaBackup()} Ele contém seus dados e modelos: guarde em local privado.</p>
     <p class="estado" style="text-align:center;margin-top:28px">Ponto Automisa · ${Object.keys(dados.registros).length} dias registrados</p>`;
 }
 
@@ -723,18 +737,105 @@ function aplicarTaxaAoMes() {
   render();
 }
 
-async function fazerBackup() {
+async function fazerBackup({ trocarPasta = false } = {}) {
   fecharDialogo();
   // O backup vai para onde você escolher; nada é enviado à internet pelo app.
-  // Nome fixo: salvo na mesma pasta, o aparelho oferece substituir o anterior.
+  // Nome fixo: na mesma pasta, o arquivo novo substitui o anterior.
   const conteudo = JSON.stringify({ app: "ponto-comau", versao: 1, exportadoEm: new Date().toISOString(), ...dados, modelos }, null, 2);
-  const ok = await entregarArquivos([new File([conteudo], ARQUIVO_BACKUP, { type: "application/json" })]);
-  if (ok) {
-    dados.config.ultimoBackup = new Date().toISOString();
-    salvar({ alterou: false });
-    avisar("Backup criado");
-    render();
+  const arquivo = new File([conteudo], ARQUIVO_BACKUP, { type: "application/json" });
+  let ok = true;
+  let falhaNaPasta = false;
+  if (trocarPasta || usaPasta()) {
+    try { ok = await gravarNaPasta(arquivo, trocarPasta); }
+    catch (e) {
+      if (e.name === "AbortError") return;
+      // Sem gravar na pasta, o backup não se perde: baixa o arquivo e deixa de insistir nessa pasta.
+      falhaNaPasta = true;
+      dados.config.pastaFalhou = true;
+      dados.config.pastaBackup = null;
+      await guardarPasta(null);
+      await baixarArquivos([arquivo]);
+    }
+  } else if (ehAndroid) {
+    await baixarArquivos([arquivo]);
+  } else {
+    ok = await entregarArquivos([arquivo]);
   }
+  if (!ok) return;
+  dados.config.ultimoBackup = new Date().toISOString();
+  salvar({ alterou: false });
+  render();
+  if (falhaNaPasta) mostrarErro("Backup salvo em Downloads", "Não foi possível gravar na pasta escolhida. Para tentar outra pasta, vá em Ajustes, Pasta do backup.");
+  else avisar("Backup criado");
+}
+
+// ---------- Pasta do backup (Android) ----------
+const usaPasta = () => temPastaNoAparelho && !dados.config.pastaFalhou;
+const lugarDoBackup = () => (ehAndroid && !usaPasta() ? "em Downloads" : `na pasta ${PASTA_BACKUP}`);
+
+function descricaoPasta() {
+  const nome = dados.config.pastaBackup;
+  if (!nome) return dados.config.pastaFalhou ? "Downloads" : "Nenhuma escolhida";
+  return nome === PASTA_BACKUP ? PASTA_BACKUP : `${PASTA_BACKUP}, dentro de ${nome}`;
+}
+
+function dicaBackup() {
+  if (usaPasta()) return `O arquivo novo substitui o anterior na pasta ${PASTA_BACKUP}.`;
+  if (ehAndroid) return "O arquivo vai para Downloads. O aparelho pode criar cópias numeradas: ao restaurar, use a mais recente.";
+  return `O arquivo tem sempre o mesmo nome. Salve na pasta ${PASTA_BACKUP} e confirme a substituição do anterior.`;
+}
+
+// O acesso à pasta fica guardado no próprio navegador, e não vai no arquivo de backup.
+function abrirBancoPasta() {
+  return new Promise((ok, erro) => {
+    const pedido = indexedDB.open("ponto-comau.backup", 1);
+    pedido.onupgradeneeded = () => pedido.result.createObjectStore("pasta");
+    pedido.onsuccess = () => ok(pedido.result);
+    pedido.onerror = () => erro(pedido.error);
+  });
+}
+async function lerPastaGuardada() {
+  try {
+    const banco = await abrirBancoPasta();
+    return await new Promise((ok, erro) => {
+      const pedido = banco.transaction("pasta").objectStore("pasta").get("backup");
+      pedido.onsuccess = () => ok(pedido.result || null);
+      pedido.onerror = () => erro(pedido.error);
+    });
+  } catch { return null; }
+}
+async function guardarPasta(pasta) {
+  try {
+    const banco = await abrirBancoPasta();
+    await new Promise((ok, erro) => {
+      const tx = banco.transaction("pasta", "readwrite");
+      if (pasta) tx.objectStore("pasta").put(pasta, "backup"); else tx.objectStore("pasta").delete("backup");
+      tx.oncomplete = ok;
+      tx.onerror = () => erro(tx.error);
+    });
+  } catch { /* sem guardar, o app pergunta a pasta de novo no próximo backup */ }
+}
+
+// Retorna false se o usuário negar o acesso. Erros seguem para quem chamou.
+async function gravarNaPasta(arquivo, trocarPasta) {
+  const modo = { mode: "readwrite" };
+  let pasta = trocarPasta ? null : await lerPastaGuardada();
+  if (pasta) {
+    if ((await pasta.queryPermission(modo)) !== "granted" && (await pasta.requestPermission(modo)) !== "granted") return false;
+  } else {
+    pasta = await window.showDirectoryPicker(modo);
+  }
+  const destino = pasta.name === PASTA_BACKUP ? pasta : await pasta.getDirectoryHandle(PASTA_BACKUP, { create: true });
+  const item = await destino.getFileHandle(ARQUIVO_BACKUP, { create: true });
+  const escrita = await item.createWritable();
+  await escrita.write(arquivo);
+  await escrita.close();
+  // Confere o que foi gravado, porque este arquivo substitui o único backup anterior.
+  if ((await item.getFile()).size !== arquivo.size) throw new Error("Arquivo gravado incompleto");
+  await guardarPasta(pasta);
+  dados.config.pastaBackup = pasta.name;
+  dados.config.pastaFalhou = false;
+  return true;
 }
 
 // ---------- Lembrete de backup ----------
@@ -758,7 +859,7 @@ function atualizarFaixaBackup() {
   if (!estado) { faixa.innerHTML = ""; return; }
   const ultimo = dados.config.ultimoBackup;
   const [titulo, texto, recusar, aceitar] = estado === "convite"
-    ? ["Ativar backup automático?", `A cada 24h o app lembra de salvar tudo na pasta ${PASTA_BACKUP}.`, ["backup-recusar", "Agora não"], ["backup-ativar", "Ativar"]]
+    ? ["Ativar backup automático?", `A cada 24h o app lembra de salvar tudo ${lugarDoBackup()}.`, ["backup-recusar", "Agora não"], ["backup-ativar", "Ativar"]]
     : ["Há alterações sem backup", ultimo ? `Último backup em ${new Date(ultimo).toLocaleDateString("pt-BR")}.` : "Nenhum backup feito ainda.", ["backup-adiar", "Depois"], ["backup-lembrete", "Fazer backup"]];
   faixa.innerHTML = `<div class="pilha-v">
       <span class="lbl-forte">${titulo}</span>
@@ -772,27 +873,36 @@ function atualizarFaixaBackup() {
 
 // O primeiro backup explica como criar a pasta, e oferece restaurar antes de substituir um backup antigo.
 function guiaBackup() {
+  const passos = usaPasta()
+    ? `<li>Toque em <b>Fazer o backup</b> e crie ou escolha uma pasta do aparelho.</li>
+        <li>Permita o acesso à pasta. Se ela não se chamar <b>${PASTA_BACKUP}</b>, o app cria essa pasta dentro dela.</li>
+        <li>Nas próximas vezes, um toque substitui o arquivo.</li>`
+    : ehAndroid
+      ? `<li>Toque em <b>Fazer o backup</b>. O arquivo vai para <b>Downloads</b>.</li>
+        <li>O aparelho pode criar cópias numeradas. Ao restaurar, use a mais recente.</li>`
+      : `<li>Toque em <b>Fazer o backup</b> e depois em <b>Salvar em Arquivos</b>.</li>
+        <li>Escolha <b>No Meu iPhone</b> e crie a pasta <b>${PASTA_BACKUP}</b>.</li>
+        <li>Toque em <b>Salvar</b>. Nas próximas vezes, use a mesma pasta e confirme a substituição.</li>`;
+  const aviso = usaPasta() || !ehAndroid ? "Cada backup substitui o anterior. Aparelho novo ou sem dados? Restaure antes." : "Aparelho novo ou sem dados? Restaure antes de fazer um novo backup.";
   abrirDialogo(`<div class="folha">
       <h2>Primeiro backup</h2>
-      <ol class="passos">
-        <li>Toque em <b>Fazer o backup</b> e depois em <b>Salvar em Arquivos</b>.</li>
-        <li>Escolha <b>No Meu iPhone</b> e crie a pasta <b>${PASTA_BACKUP}</b>.</li>
-        <li>Toque em <b>Salvar</b>. Nas próximas vezes, use a mesma pasta e confirme a substituição.</li>
-      </ol>
-      <p class="sub-folha">Cada backup substitui o anterior. Aparelho novo ou sem dados? Restaure antes.</p>
+      <ol class="passos">${passos}</ol>
+      <p class="sub-folha">${aviso}</p>
       <div class="pilha">
-        <button class="primario" data-acao="backup">Fazer o backup</button>
+        <button class="primario" data-acao="backup-guia">Fazer o backup</button>
         <button class="secundario" data-acao="restaurar">Restaurar um backup</button>
         <button class="link mudo" style="width:100%;min-height:44px" data-acao="fechar">Agora não</button>
       </div>
     </div>`);
 }
 
+const precisaGuia = () => !dados.config.ultimoBackup || (usaPasta() && !dados.config.pastaBackup);
+
 function definirLembreteBackup(ativo) {
   dados.config.lembreteBackup = ativo;
   salvar({ alterou: false });
   render();
-  if (ativo && !dados.config.ultimoBackup) guiaBackup();
+  if (ativo && precisaGuia()) guiaBackup();
 }
 
 async function restaurarBackup() {
@@ -807,7 +917,7 @@ async function restaurarBackup() {
   if (!confirm(`Restaurar ${qtd} dias do backup de ${new Date(lido.exportadoEm).toLocaleDateString("pt-BR")}? Os registros atuais deste aparelho serão substituídos.`)) return;
   // O conteúdo restaurado é o do backup: nada novo para salvar até a próxima alteração.
   const dataBackup = lido.exportadoEm || null;
-  dados = { registros: normalizarRegistros(lido.registros), config: { ...PADRAO.config, ...lido.config, ultimoBackup: dataBackup, alteradoEm: dataBackup } };
+  dados = { registros: normalizarRegistros(lido.registros), config: { ...PADRAO.config, ...lido.config, ultimoBackup: dataBackup, alteradoEm: dataBackup, pastaBackup: null, pastaFalhou: false } };
   // Backups antigos trazem um único modelo, no campo "modelo".
   const doBackup = lido.modelos || (lido.modelo ? { [ehGME(lido.modelo.arquivo) ? "gme" : "comau"]: lido.modelo } : {});
   for (const [tipo, m] of Object.entries(doBackup)) {
@@ -875,11 +985,11 @@ document.addEventListener("click", (e) => {
     "pausa-padrao": () => { dados.config.jantarPadrao = !dados.config.jantarPadrao; if (salvar()) render(); },
     "salvar-ajustes": () => { if (salvarTaxaPadrao() !== null) { avisar("Ajustes salvos"); render(); } },
     "aplicar-taxa": aplicarTaxaAoMes,
-    modelo: () => { fecharDialogo(); escolherModelo(); }, backup: fazerBackup, restaurar: () => { fecharDialogo(); restaurarBackup(); }, fechar: fecharDialogo,
+    modelo: () => { fecharDialogo(); escolherModelo(); }, backup: () => { if (usaPasta() && !dados.config.pastaBackup) guiaBackup(); else fazerBackup(); }, "backup-guia": () => fazerBackup(), "backup-trocar-pasta": () => fazerBackup({ trocarPasta: true }), restaurar: () => { fecharDialogo(); restaurarBackup(); }, fechar: fecharDialogo,
     "backup-ativar": () => definirLembreteBackup(true),
     "backup-recusar": () => definirLembreteBackup(false),
     "backup-adiar": () => { backupAdiadoAte = Date.now() + ADIAMENTO_BACKUP; atualizarFaixaBackup(); },
-    "backup-lembrete": () => { if (dados.config.ultimoBackup) fazerBackup(); else guiaBackup(); },
+    "backup-lembrete": () => { if (precisaGuia()) guiaBackup(); else fazerBackup(); },
     "lembrete-backup": () => definirLembreteBackup(!dados.config.lembreteBackup),
   };
   if (acoes[alvo.dataset.acao]) { e.preventDefault(); acoes[alvo.dataset.acao](); }
