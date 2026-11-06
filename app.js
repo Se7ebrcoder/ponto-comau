@@ -3,6 +3,8 @@ import { desenharComprovante } from "./comprovante.js";
 
 const CHAVE = "ponto-comau.v1";
 const CHAVE_MODELO = "ponto-comau.modelo";
+const CHAVE_MODELO_GME = "ponto-comau.modelo-gme";
+const NOME_CLIENTE = { comau: "COMAU", gme: "GME" };
 const CHAVE_TEMA = "ponto-comau.tema";
 const MESES = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
 const SEMANA = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
@@ -62,22 +64,51 @@ const taxaTexto = (v) => (!v ? "" : String(v).replace(".", ","));
 // ---------- Armazenamento (só neste aparelho) ----------
 const PADRAO = { registros: {}, config: { taxaPadrao: 0, centroPadrao: null, jantarPadrao: true, commessaPadrao: "", ultimoBackup: null } };
 let dados = carregar();
-let infoModelo = carregarModelo(); // { arquivo, importadoEm, funcionario, centros, base64 } ou null
+let modelos = carregarModelos(); // { comau, gme }: cada um { arquivo, importadoEm, funcionario, centros, base64 } ou null
+
+// Cada cliente tem seus pontos: o mesmo dia pode ter um ponto da COMAU e outro da GME.
+function chaveRegistro(data, cliente) { return cliente === "gme" ? `${data}#gme` : data; }
+
+// Pontos antigos não têm cliente: almoço ou commessa indicam GME; os demais são da COMAU.
+function normalizarRegistros(registros) {
+  const saida = {};
+  for (const r of Object.values(registros)) {
+    const cliente = r.cliente || (r.almocoSaida || r.commessa ? "gme" : "comau");
+    saida[chaveRegistro(r.data, cliente)] = { ...r, cliente };
+  }
+  return saida;
+}
 
 function carregar() {
   try {
     const salvo = JSON.parse(localStorage.getItem(CHAVE));
-    if (salvo && salvo.registros) return { registros: salvo.registros, config: { ...PADRAO.config, ...salvo.config } };
+    if (salvo && salvo.registros) return { registros: normalizarRegistros(salvo.registros), config: { ...PADRAO.config, ...salvo.config } };
   } catch { /* sem dados ou armazenamento bloqueado */ }
   return structuredClone(PADRAO);
 }
 
-function carregarModelo() {
-  try { return JSON.parse(localStorage.getItem(CHAVE_MODELO)); } catch { return null; }
+function carregarModelos() {
+  const ler = (chave) => { try { return JSON.parse(localStorage.getItem(chave)); } catch { return null; } };
+  const m = { comau: ler(CHAVE_MODELO), gme: ler(CHAVE_MODELO_GME) };
+  // Antes havia um modelo só, guardado sempre na mesma chave, que podia ser o da GME.
+  if (ehGME(m.comau?.arquivo)) {
+    m.gme = m.gme || m.comau;
+    m.comau = null;
+    try { localStorage.setItem(CHAVE_MODELO_GME, JSON.stringify(m.gme)); localStorage.removeItem(CHAVE_MODELO); } catch { /* tenta de novo na próxima abertura */ }
+  }
+  return m;
 }
 
-// Com um modelo da GME (reconhecido pelo nome do arquivo), o ponto pede almoço e commessa.
-const modeloGME = () => ehGME(infoModelo?.arquivo);
+const doisClientes = () => !!(modelos.comau && modelos.gme);
+function clienteInicial() {
+  const salvo = dados.config.cliente;
+  if (salvo && modelos[salvo]) return salvo;
+  return modelos.gme && !modelos.comau ? "gme" : "comau";
+}
+
+// No cliente GME, o ponto pede almoço e commessa.
+const modeloGME = () => ui.cliente === "gme";
+const taxaPadrao = () => (modeloGME() ? dados.config.taxaPadraoGME ?? dados.config.taxaPadrao : dados.config.taxaPadrao);
 
 function salvar() {
   try {
@@ -102,7 +133,7 @@ function paraBase64(buffer) {
 const deBase64 = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).buffer;
 
 const registrosDoMes = (ano, mes) => Object.values(dados.registros)
-  .filter((r) => r.data.startsWith(`${ano}-${pad(mes)}-`))
+  .filter((r) => r.cliente === ui.cliente && r.data.startsWith(`${ano}-${pad(mes)}-`))
   .sort((a, b) => a.data.localeCompare(b.data));
 
 // ---------- Tema: automático (segue o aparelho), claro ou escuro ----------
@@ -125,18 +156,18 @@ midiaEscura.addEventListener("change", () => { if (temaEscolhido() === "auto") a
 
 // ---------- Estado da interface ----------
 const hoje = new Date();
-const ui = { aba: "registrar", ano: hoje.getFullYear(), mes: hoje.getMonth() + 1 };
+const ui = { aba: "registrar", ano: hoje.getFullYear(), mes: hoje.getMonth() + 1, cliente: clienteInicial() };
 
 // Formulário da tela Registrar: sempre começa um ponto novo. `original` é a data do
 // registro em edição, aberto pela lista de Registros (ou null se novo).
 let form;
 const formNovo = (data = chaveData(new Date())) => ({
   data, inicio: "", fim: "", jantar: !modeloGME() && dados.config.jantarPadrao, almocoSaida: "", almocoVolta: "",
-  taxa: dados.config.taxaPadrao, commessa: dados.config.commessaPadrao || "", obs: "", original: null, alterado: false,
+  taxa: taxaPadrao(), commessa: dados.config.commessaPadrao || "", obs: "", original: null, alterado: false,
 });
 const formDe = (r) => ({
   data: r.data, inicio: r.inicio || "", fim: r.fim || "", jantar: !!r.jantar, almocoSaida: r.almocoSaida || "", almocoVolta: r.almocoVolta || "",
-  taxa: r.taxa ?? dados.config.taxaPadrao, commessa: r.commessa ?? (dados.config.commessaPadrao || ""), obs: r.obs || "", original: r.data, alterado: false,
+  taxa: r.taxa ?? taxaPadrao(), commessa: r.commessa ?? (dados.config.commessaPadrao || ""), obs: r.obs || "", original: r.data, alterado: false,
 });
 function navegar(aba, { manterForm = false } = {}) {
   ui.aba = aba;
@@ -157,10 +188,28 @@ function render() {
   const [titulo, sub, tela, acoes] = telas[ui.aba];
   $("#cab-titulo").textContent = titulo;
   $("#cab-sub").textContent = sub;
-  $("#conteudo").innerHTML = tela();
+  $("#conteudo").innerHTML = seletorCliente() + tela();
   $("#acoes").innerHTML = acoes;
   if (ui.aba === "registrar") atualizarCalculo();
   if (ui.aba === "registros") $('[data-acao="gerar"]').disabled = !registrosDoMes(ui.ano, ui.mes).length;
+}
+
+// Só aparece com os dois modelos: pontos, totais, planilha e comprovante seguem o cliente escolhido.
+function seletorCliente() {
+  if (!doisClientes()) return "";
+  const opcao = (c) => `<button data-acao="cliente" data-valor="${c}" aria-pressed="${ui.cliente === c}">${NOME_CLIENTE[c]}</button>`;
+  return `<div class="linha">
+      <span class="lbl-forte">Cliente</span>
+      <div class="seg" role="group" aria-label="Cliente">${opcao("comau")}${opcao("gme")}</div>
+    </div>`;
+}
+
+function trocarCliente(cliente) {
+  ui.cliente = cliente;
+  dados.config.cliente = cliente;
+  salvar();
+  form = formNovo();
+  render();
 }
 
 // ---------- Tela: Registrar ----------
@@ -254,8 +303,29 @@ function validar(v) {
   const erroAlmoco = validarAlmoco(v);
   if (erroAlmoco) return erroAlmoco;
   if (!v.taxa) return "Informe o preço por hora (ex.: 50 ou 47,50). Para já vir preenchido, defina o padrão em Ajustes.";
-  if (dados.registros[v.data] && v.data !== v.original) return `Já existe um registro em ${curta(v.data)}. Para alterá-lo, toque nele em Registros.`;
+  if (dados.registros[chaveRegistro(v.data, ui.cliente)] && v.data !== v.original) return `Já existe um registro em ${curta(v.data)}. Para alterá-lo, toque nele em Registros.`;
+  const conflito = pontoSobreposto(v);
+  if (conflito) return `Este horário se sobrepõe ao ponto da ${NOME_CLIENTE[conflito.cliente]} de ${curta(conflito.data)} (${conflito.inicio}–${conflito.fim}).`;
   return "";
+}
+
+// Intervalo do turno em minutos absolutos, para comparar pontos de datas diferentes.
+function intervaloDoTurno(r) {
+  const [a, m, d] = r.data.split("-").map(Number);
+  const base = Date.UTC(a, m - 1, d) / 60000;
+  let fim = minutosDe(r.fim);
+  if (fim < minutosDe(r.inicio)) fim += 1440;
+  return [base + minutosDe(r.inicio), base + fim];
+}
+
+function pontoSobreposto(v) {
+  if (!v.fim) return null;
+  const [ini, fim] = intervaloDoTurno(v);
+  return Object.values(dados.registros).find((r) => {
+    if (r.cliente === ui.cliente || !horaOk(r.inicio) || !horaOk(r.fim)) return false;
+    const [a, b] = intervaloDoTurno(r);
+    return ini < b && a < fim;
+  });
 }
 
 function validarAlmoco({ inicio, fim, almocoSaida: saida, almocoVolta: volta }) {
@@ -274,12 +344,13 @@ function salvarRegistro() {
   lerFormulario();
   const erro = validar(form);
   if (erro) return mostrarErro("Não foi possível salvar", erro);
-  if (form.original && form.original !== form.data) delete dados.registros[form.original];
+  if (form.original && form.original !== form.data) delete dados.registros[chaveRegistro(form.original, ui.cliente)];
   const { data, inicio, fim, jantar, almocoSaida, almocoVolta, taxa, commessa, obs } = form;
-  dados.registros[data] = { data, inicio, fim, jantar, almocoSaida, almocoVolta, taxa, commessa, obs };
+  const registro = { data, cliente: ui.cliente, inicio, fim, jantar, almocoSaida, almocoVolta, taxa, commessa, obs };
+  dados.registros[chaveRegistro(data, ui.cliente)] = registro;
   if (!salvar()) return;
   const editando = form.original;
-  avisar(fim ? `${curta(data)} salvo · ${fmtHM(minutosTrabalhados(dados.registros[data]))} h` : `Início salvo às ${inicio}`);
+  avisar(fim ? `${curta(data)} salvo · ${fmtHM(minutosTrabalhados(registro))} h` : `Início salvo às ${inicio}`);
   pedirPersistencia();
   // O ponto salvo fica em Registros; a tela volta zerada para o próximo.
   form = formNovo();
@@ -288,7 +359,7 @@ function salvarRegistro() {
 
 function excluirRegistro() {
   if (!form.original || !confirm(`Excluir o dia ${curta(form.original)}?`)) return;
-  delete dados.registros[form.original];
+  delete dados.registros[chaveRegistro(form.original, ui.cliente)];
   if (salvar()) avisar(`${curta(form.original)} excluído`);
   form = formNovo();
   render();
@@ -349,21 +420,24 @@ async function escolherModelo() {
     lido = await lerModelo(window.JSZip, buffer, arq.name);
   } catch (e) { return mostrarErro("Modelo inválido", mensagemDe(e)); }
   const novo = { arquivo: arq.name, importadoEm: new Date().toISOString(), funcionario: lido.funcionario, centros: lido.centros, base64: paraBase64(buffer) };
-  try { localStorage.setItem(CHAVE_MODELO, JSON.stringify(novo)); } catch {
+  try { localStorage.setItem(lido.tipo === "gme" ? CHAVE_MODELO_GME : CHAVE_MODELO, JSON.stringify(novo)); } catch {
     return mostrarErro("Não foi possível salvar o modelo", "O armazenamento do aparelho está cheio ou bloqueado. Libere espaço e tente novamente.");
   }
-  infoModelo = novo;
+  modelos[lido.tipo] = novo;
+  ui.cliente = lido.tipo;
+  dados.config.cliente = lido.tipo;
   // O centro de custo da planilha COMAU é sempre o mais usado no modelo.
   if (lido.centroMaisUsado) dados.config.centroPadrao = lido.centroMaisUsado;
   salvar();
   pedirPersistencia();
-  avisar("Modelo configurado");
+  avisar(`Modelo ${NOME_CLIENTE[lido.tipo]} configurado`);
   render();
 }
 
 async function gerar() {
   const { ano, mes } = ui;
-  if (!infoModelo) {
+  const info = modelos[ui.cliente];
+  if (!info) {
     return abrirDialogo(`<div class="folha">
         <h2>Escolha o modelo da planilha</h2>
         <p class="sub-folha">Selecione no app Arquivos uma planilha de horas de qualquer mês (COMAU ou GME). Ela fica guardada só neste aparelho e serve de base para as próximas.</p>
@@ -377,15 +451,15 @@ async function gerar() {
   botao.disabled = true;
   botao.textContent = "Gerando…";
   try {
-    const tipo = modeloGME() ? "gme" : "comau";
+    const tipo = ui.cliente;
     const doMes = registrosDoMes(ano, mes);
-    const r = await gerarPlanilha(window.JSZip, deBase64(infoModelo.base64), {
-      tipo, ano, mes, centroPadrao: dados.config.centroPadrao || infoModelo.centros[0], commessaPadrao: dados.config.commessaPadrao,
-      // Na GME, o fim de um turno do mês anterior pode cair no dia 1, por isso vão todos os registros.
-      registros: tipo === "gme" ? Object.values(dados.registros) : doMes.map((x) => ({ ...x, centro: null })),
+    const r = await gerarPlanilha(window.JSZip, deBase64(info.base64), {
+      tipo, ano, mes, centroPadrao: dados.config.centroPadrao || info.centros[0], commessaPadrao: dados.config.commessaPadrao,
+      // Na GME, o fim de um turno do mês anterior pode cair no dia 1, por isso vão todos os registros do cliente.
+      registros: tipo === "gme" ? Object.values(dados.registros).filter((x) => x.cliente === "gme") : doMes.map((x) => ({ ...x, centro: null })),
     });
     const valor = doMes.filter((x) => x.fim).reduce((s, x) => s + valorDoDia(x), 0);
-    const arquivo = new File([r.arquivo], nomeArquivo(ano, mes, infoModelo.funcionario, tipo), { type: tipo === "gme" ? MIME_XLSX : MIME_XLSM });
+    const arquivo = new File([r.arquivo], nomeArquivo(ano, mes, info.funcionario, tipo), { type: tipo === "gme" ? MIME_XLSX : MIME_XLSM });
     // O comprovante já fica pronto aqui: o iPhone só compartilha arquivos prontos no toque do botão.
     const comprovante = await criarComprovante(ano, mes);
     abrirDialogo(`<div class="folha">
@@ -437,9 +511,11 @@ async function criarComprovante(ano, mes) {
   const lista = registrosDoMes(ano, mes);
   const completos = lista.filter((r) => r.inicio && r.fim);
   const agora = new Date();
+  const funcionario = modelos[ui.cliente]?.funcionario || "";
+  const dois = doisClientes();
   const imagem = await desenharComprovante({
-    funcionario: infoModelo?.funcionario || "",
-    titulo: `${MESES[mes - 1]} de ${ano}`,
+    funcionario,
+    titulo: `${MESES[mes - 1]} de ${ano}${dois ? ` · ${NOME_CLIENTE[ui.cliente]}` : ""}`,
     geradoEm: `${agora.toLocaleDateString("pt-BR")} às ${horaAgora()}`,
     totais: {
       dias: completos.length,
@@ -454,8 +530,9 @@ async function criarComprovante(ano, mes) {
       };
     }),
   });
-  const primeiro = (infoModelo?.funcionario || "").trim().split(/\s+/)[0];
-  return new File([imagem], `Comprovante_Horas_${primeiro ? primeiro + "_" : ""}${pad(mes)}_${ano}.png`, { type: "image/png" });
+  const primeiro = funcionario.trim().split(/\s+/)[0];
+  const partes = ["Comprovante_Horas", primeiro, dois && NOME_CLIENTE[ui.cliente], pad(mes), ano].filter(Boolean);
+  return new File([imagem], `${partes.join("_")}.png`, { type: "image/png" });
 }
 
 async function gerarSoComprovante() {
@@ -501,17 +578,27 @@ function telaAjustes() {
   const tema = temaEscolhido();
   const opcaoTema = (v, rotulo) => `<button data-acao="tema" data-valor="${v}" aria-pressed="${tema === v}">${rotulo}</button>`;
   const ultimo = c.ultimoBackup ? new Date(c.ultimoBackup).toLocaleDateString("pt-BR") : "nunca";
+  const linhaModelo = (tipo) => {
+    const m = modelos[tipo];
+    return `<div class="linha alta">
+      <div class="cresce pilha-v">
+        <span class="lbl-forte">Planilha ${NOME_CLIENTE[tipo]}</span>
+        <span class="dica reticencias">${m ? esc(m.arquivo) : "Nenhum modelo escolhido"}</span>
+      </div>
+      <button class="link" data-acao="modelo">${m ? "Trocar" : "Escolher"}</button>
+    </div>`;
+  };
   return `<h2 class="secao">Aparência</h2>
     <div class="linha">
       <span class="lbl-forte">Tema</span>
       <div class="seg" role="group" aria-label="Tema">${opcaoTema("auto", "Auto")}${opcaoTema("light", "Claro")}${opcaoTema("dark", "Escuro")}</div>
     </div>
 
-    <h2 class="secao">Novos registros</h2>
+    <h2 class="secao">Novos registros${doisClientes() ? ` · ${NOME_CLIENTE[ui.cliente]}` : ""}</h2>
     <div class="linha">
       <span class="lbl-forte cresce">Preço por hora padrão</span>
       <span class="unidade">R$</span>
-      <input id="a-taxa" class="numero" inputmode="decimal" value="${taxaTexto(c.taxaPadrao)}" placeholder="0" aria-label="Preço por hora padrão">
+      <input id="a-taxa" class="numero" inputmode="decimal" value="${taxaTexto(taxaPadrao())}" placeholder="0" aria-label="Preço por hora padrão">
     </div>
     ${modeloGME() ? `<div class="linha">
       <span class="lbl-forte cresce">Commessa padrão</span>
@@ -529,13 +616,9 @@ function telaAjustes() {
     </div>
 
     <h2 class="secao">Modelo da planilha</h2>
-    <div class="linha alta">
-      <div class="cresce pilha-v">
-        <span class="lbl-forte reticencias">${infoModelo ? esc(infoModelo.arquivo) : "Nenhum modelo escolhido"}</span>
-        <span class="dica">${infoModelo ? `Escolhido em ${new Date(infoModelo.importadoEm).toLocaleDateString("pt-BR")} · fica só neste aparelho` : "Qualquer planilha de horas já feita serve (COMAU ou GME)"}</span>
-      </div>
-      <button class="link" data-acao="modelo">${infoModelo ? "Trocar" : "Escolher"}</button>
-    </div>
+    ${linhaModelo("comau")}
+    ${linhaModelo("gme")}
+    <p class="dica" style="margin:10px 0 0">Qualquer planilha já feita serve. Arquivo com GME no nome vira o modelo da GME. Fica só neste aparelho.</p>
 
     <h2 class="secao">Backup</h2>
     <div class="linha alta">
@@ -557,7 +640,7 @@ function salvarTaxaPadrao() {
   const campo = $("#a-taxa").value.trim();
   const taxa = /^0*([.,]0*)?$/.test(campo) ? 0 : lerTaxa(campo);
   if (taxa === null) { mostrarErro("Ajustes não salvos", "Informe o preço por hora (ex.: 50 ou 47,50)."); return null; }
-  dados.config.taxaPadrao = taxa;
+  dados.config[modeloGME() ? "taxaPadraoGME" : "taxaPadrao"] = taxa;
   const commessa = $("#a-commessa");
   if (commessa) dados.config.commessaPadrao = commessa.value.trim();
   return salvar() ? taxa : null;
@@ -577,7 +660,7 @@ function aplicarTaxaAoMes() {
 
 async function fazerBackup() {
   // O backup vai para onde você escolher (ex.: iCloud Drive); nada é enviado à internet pelo app.
-  const conteudo = JSON.stringify({ app: "ponto-comau", versao: 1, exportadoEm: new Date().toISOString(), ...dados, modelo: infoModelo }, null, 2);
+  const conteudo = JSON.stringify({ app: "ponto-comau", versao: 1, exportadoEm: new Date().toISOString(), ...dados, modelos }, null, 2);
   const ok = await entregarArquivos([new File([conteudo], `backup-ponto-${chaveData(new Date())}.json`, { type: "application/json" })]);
   if (ok) {
     dados.config.ultimoBackup = new Date().toISOString();
@@ -597,10 +680,14 @@ async function restaurarBackup() {
   } catch { return mostrarErro("Backup inválido", "O arquivo escolhido não é um backup do Ponto Automisa."); }
   const qtd = Object.keys(lido.registros).length;
   if (!confirm(`Restaurar ${qtd} dias do backup de ${new Date(lido.exportadoEm).toLocaleDateString("pt-BR")}? Os registros atuais deste aparelho serão substituídos.`)) return;
-  dados = { registros: lido.registros, config: { ...PADRAO.config, ...lido.config } };
-  if (lido.modelo?.base64) {
-    try { localStorage.setItem(CHAVE_MODELO, JSON.stringify(lido.modelo)); infoModelo = lido.modelo; } catch { /* registros restaurados mesmo assim */ }
+  dados = { registros: normalizarRegistros(lido.registros), config: { ...PADRAO.config, ...lido.config } };
+  // Backups antigos trazem um único modelo, no campo "modelo".
+  const doBackup = lido.modelos || (lido.modelo ? { [ehGME(lido.modelo.arquivo) ? "gme" : "comau"]: lido.modelo } : {});
+  for (const [tipo, m] of Object.entries(doBackup)) {
+    if (!m?.base64) continue;
+    try { localStorage.setItem(tipo === "gme" ? CHAVE_MODELO_GME : CHAVE_MODELO, JSON.stringify(m)); modelos[tipo] = m; } catch { /* registros restaurados mesmo assim */ }
   }
+  ui.cliente = clienteInicial();
   if (salvar()) avisar(`${qtd} dias restaurados`);
   render();
 }
@@ -651,7 +738,8 @@ document.addEventListener("click", (e) => {
       atualizarCalculo();
     },
     salvar: salvarRegistro, excluir: excluirRegistro, limpar: () => { form = formNovo(); render(); },
-    editar: () => { form = formDe(dados.registros[alvo.dataset.data]); navegar("registrar", { manterForm: true }); },
+    editar: () => { form = formDe(dados.registros[chaveRegistro(alvo.dataset.data, ui.cliente)]); navegar("registrar", { manterForm: true }); },
+    cliente: () => trocarCliente(alvo.dataset.valor),
     "mes-anterior": () => mudarMes(-1), "mes-seguinte": () => mudarMes(1), gerar, comprovante: gerarSoComprovante,
     "alternar-tema": () => escolherTema(temaEfetivo() === "dark" ? "light" : "dark"),
     tema: () => escolherTema(alvo.dataset.valor),
