@@ -159,6 +159,15 @@ dialog[open] { animation: subir .22s ease-out; }
 .icone-resultado.falha { color: var(--perigo); background: var(--perigo-bg); }
 .icone-resultado svg { width: 26px; height: 26px; stroke-width: 2.4; }
 
+.passos { margin: 8px 0 14px; padding-left: 20px; font-size: 15px; line-height: 1.45; }
+.passos li + li { margin-top: 6px; }
+
+/* ---------- Lembrete de backup ---------- */
+.faixa { flex: none; margin: 0 24px 8px; padding: 12px 14px 4px; border: 1px solid var(--borda-forte); border-radius: 14px; }
+.faixa[hidden] { display: none; }
+.faixa-botoes { display: flex; justify-content: flex-end; align-items: center; gap: 14px; }
+.faixa-botoes .link { font-size: 14px; }
+
 /* ---------- Aviso rápido ---------- */
 #aviso { position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 150px); transform: translate(-50%, 8px);
   padding: 12px 18px; border-radius: 14px; background: var(--aviso-bg); color: var(--aviso-fg); font-size: 14px; font-weight: 700;

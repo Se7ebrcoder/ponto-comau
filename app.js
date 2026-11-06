@@ -61,8 +61,14 @@ function lerTaxa(texto) {
 // Preço 0 fica com o campo vazio (mostra "0" de exemplo), para digitar sem precisar apagar.
 const taxaTexto = (v) => (!v ? "" : String(v).replace(".", ","));
 
+// ---------- Backup ----------
+const ARQUIVO_BACKUP = "backup-pontos.json";
+const PASTA_BACKUP = "Backup Pontos";
+const INTERVALO_BACKUP = 24 * 60 * 60 * 1000;
+const ADIAMENTO_BACKUP = 6 * 60 * 60 * 1000; // "Depois": o lembrete volta em 6 horas
+
 // ---------- Armazenamento (só neste aparelho) ----------
-const PADRAO = { registros: {}, config: { taxaPadrao: 0, centroPadrao: null, jantarPadrao: true, commessaPadrao: "", ultimoBackup: null } };
+const PADRAO = { registros: {}, config: { taxaPadrao: 0, centroPadrao: null, jantarPadrao: true, commessaPadrao: "", ultimoBackup: null, lembreteBackup: null, alteradoEm: null } };
 let dados = carregar();
 let modelos = carregarModelos(); // { comau, gme }: cada um { arquivo, importadoEm, funcionario, centros, base64 } ou null
 
@@ -135,8 +141,10 @@ function campoCommessa(id, atual, rotulo) {
     </select>`;
 }
 
-function salvar() {
+// alterou: false quando o que mudou não precisa de um novo backup (ex.: a data do próprio backup).
+function salvar({ alterou = true } = {}) {
   try {
+    if (alterou) dados.config.alteradoEm = new Date().toISOString();
     localStorage.setItem(CHAVE, JSON.stringify(dados));
     return true;
   } catch {
@@ -217,6 +225,7 @@ function render() {
   $("#acoes").innerHTML = acoes;
   if (ui.aba === "registrar") atualizarCalculo();
   if (ui.aba === "registros") $('[data-acao="gerar"]').disabled = !registrosDoMes(ui.ano, ui.mes).length;
+  atualizarFaixaBackup();
 }
 
 // Só aparece com os dois modelos: pontos, totais, planilha e comprovante seguem o cliente escolhido.
@@ -670,14 +679,22 @@ function telaAjustes() {
     <div class="linha alta">
       <div class="cresce pilha-v">
         <span class="lbl-forte">Último backup</span>
-        <span class="dica">${ultimo} · inclui registros, ajustes e modelo</span>
+        <span class="dica">${ultimo} · inclui registros, ajustes e modelos</span>
       </div>
       <button class="link" data-acao="backup">Fazer agora</button>
+    </div>
+    <div class="linha alta">
+      <div class="cresce pilha-v">
+        <span class="lbl-forte">Lembrete a cada 24h</span>
+        <span class="dica">Avisa quando houver alterações sem backup</span>
+      </div>
+      <button class="interruptor" data-acao="lembrete-backup" role="switch" aria-checked="${c.lembreteBackup === true}" aria-label="Lembrete de backup a cada 24 horas"><span></span></button>
     </div>
     <div class="linha">
       <span class="lbl-forte cresce">Restaurar de um backup</span>
       <button class="link" data-acao="restaurar">Restaurar</button>
     </div>
+    <p class="dica" style="margin:10px 0 0">O arquivo tem sempre o mesmo nome. Salve na pasta ${PASTA_BACKUP} e confirme a substituição do anterior. Ele contém seus dados e modelos: guarde em local privado.</p>
     <p class="estado" style="text-align:center;margin-top:28px">Ponto Automisa · ${Object.keys(dados.registros).length} dias registrados</p>`;
 }
 
@@ -707,15 +724,75 @@ function aplicarTaxaAoMes() {
 }
 
 async function fazerBackup() {
-  // O backup vai para onde você escolher (ex.: iCloud Drive); nada é enviado à internet pelo app.
+  fecharDialogo();
+  // O backup vai para onde você escolher; nada é enviado à internet pelo app.
+  // Nome fixo: salvo na mesma pasta, o aparelho oferece substituir o anterior.
   const conteudo = JSON.stringify({ app: "ponto-comau", versao: 1, exportadoEm: new Date().toISOString(), ...dados, modelos }, null, 2);
-  const ok = await entregarArquivos([new File([conteudo], `backup-ponto-${chaveData(new Date())}.json`, { type: "application/json" })]);
+  const ok = await entregarArquivos([new File([conteudo], ARQUIVO_BACKUP, { type: "application/json" })]);
   if (ok) {
     dados.config.ultimoBackup = new Date().toISOString();
-    salvar();
+    salvar({ alterou: false });
     avisar("Backup criado");
     render();
   }
+}
+
+// ---------- Lembrete de backup ----------
+// O navegador não grava sozinho nos arquivos do aparelho: o app avisa e o usuário confirma com um toque.
+let backupAdiadoAte = 0;
+
+function estadoBackup() {
+  const c = dados.config;
+  if (!Object.keys(dados.registros).length) return null;
+  if (c.lembreteBackup === null) return "convite";
+  if (!c.lembreteBackup || Date.now() < backupAdiadoAte) return null;
+  const ultimo = Date.parse(c.ultimoBackup) || 0;
+  if (!ultimo) return "pendente";
+  return Date.now() - ultimo >= INTERVALO_BACKUP && (Date.parse(c.alteradoEm) || 0) > ultimo ? "pendente" : null;
+}
+
+function atualizarFaixaBackup() {
+  const faixa = $("#faixa-backup");
+  const estado = estadoBackup();
+  faixa.hidden = !estado;
+  if (!estado) { faixa.innerHTML = ""; return; }
+  const ultimo = dados.config.ultimoBackup;
+  const [titulo, texto, recusar, aceitar] = estado === "convite"
+    ? ["Ativar backup automático?", `A cada 24h o app lembra de salvar tudo na pasta ${PASTA_BACKUP}.`, ["backup-recusar", "Agora não"], ["backup-ativar", "Ativar"]]
+    : ["Há alterações sem backup", ultimo ? `Último backup em ${new Date(ultimo).toLocaleDateString("pt-BR")}.` : "Nenhum backup feito ainda.", ["backup-adiar", "Depois"], ["backup-lembrete", "Fazer backup"]];
+  faixa.innerHTML = `<div class="pilha-v">
+      <span class="lbl-forte">${titulo}</span>
+      <span class="dica">${texto}</span>
+    </div>
+    <div class="faixa-botoes">
+      <button class="link mudo" data-acao="${recusar[0]}">${recusar[1]}</button>
+      <button class="link" data-acao="${aceitar[0]}">${aceitar[1]}</button>
+    </div>`;
+}
+
+// O primeiro backup explica como criar a pasta, e oferece restaurar antes de substituir um backup antigo.
+function guiaBackup() {
+  abrirDialogo(`<div class="folha">
+      <h2>Primeiro backup</h2>
+      <ol class="passos">
+        <li>Toque em <b>Fazer o backup</b> e depois em <b>Salvar em Arquivos</b>.</li>
+        <li>Escolha <b>No Meu iPhone</b> e crie a pasta <b>${PASTA_BACKUP}</b>.</li>
+        <li>Toque em <b>Salvar</b>. Nas próximas vezes, use a mesma pasta e confirme a substituição.</li>
+      </ol>
+      <p class="sub-folha">Cada backup substitui o anterior. Aparelho novo ou sem dados? Restaure antes.</p>
+      <div class="pilha">
+        <button class="primario" data-acao="backup">Fazer o backup</button>
+        <button class="secundario" data-acao="restaurar">Restaurar um backup</button>
+        <button class="link mudo" style="width:100%;min-height:44px" data-acao="fechar">Agora não</button>
+      </div>
+    </div>`);
+}
+
+function definirLembreteBackup(ativo) {
+  dados.config.lembreteBackup = ativo;
+  salvar({ alterou: false });
+  render();
+  if (ativo && !dados.config.ultimoBackup) guiaBackup();
 }
 
 async function restaurarBackup() {
@@ -728,7 +805,9 @@ async function restaurarBackup() {
   } catch { return mostrarErro("Backup inválido", "O arquivo escolhido não é um backup do Ponto Automisa."); }
   const qtd = Object.keys(lido.registros).length;
   if (!confirm(`Restaurar ${qtd} dias do backup de ${new Date(lido.exportadoEm).toLocaleDateString("pt-BR")}? Os registros atuais deste aparelho serão substituídos.`)) return;
-  dados = { registros: normalizarRegistros(lido.registros), config: { ...PADRAO.config, ...lido.config } };
+  // O conteúdo restaurado é o do backup: nada novo para salvar até a próxima alteração.
+  const dataBackup = lido.exportadoEm || null;
+  dados = { registros: normalizarRegistros(lido.registros), config: { ...PADRAO.config, ...lido.config, ultimoBackup: dataBackup, alteradoEm: dataBackup } };
   // Backups antigos trazem um único modelo, no campo "modelo".
   const doBackup = lido.modelos || (lido.modelo ? { [ehGME(lido.modelo.arquivo) ? "gme" : "comau"]: lido.modelo } : {});
   for (const [tipo, m] of Object.entries(doBackup)) {
@@ -736,7 +815,7 @@ async function restaurarBackup() {
     try { localStorage.setItem(tipo === "gme" ? CHAVE_MODELO_GME : CHAVE_MODELO, JSON.stringify(m)); modelos[tipo] = m; } catch { /* registros restaurados mesmo assim */ }
   }
   ui.cliente = clienteInicial();
-  if (salvar()) avisar(`${qtd} dias restaurados`);
+  if (salvar({ alterou: false })) avisar(`${qtd} dias restaurados`);
   await completarModelos();
   form = formNovo();
   render();
@@ -796,7 +875,12 @@ document.addEventListener("click", (e) => {
     "pausa-padrao": () => { dados.config.jantarPadrao = !dados.config.jantarPadrao; if (salvar()) render(); },
     "salvar-ajustes": () => { if (salvarTaxaPadrao() !== null) { avisar("Ajustes salvos"); render(); } },
     "aplicar-taxa": aplicarTaxaAoMes,
-    modelo: () => { fecharDialogo(); escolherModelo(); }, backup: fazerBackup, restaurar: restaurarBackup, fechar: fecharDialogo,
+    modelo: () => { fecharDialogo(); escolherModelo(); }, backup: fazerBackup, restaurar: () => { fecharDialogo(); restaurarBackup(); }, fechar: fecharDialogo,
+    "backup-ativar": () => definirLembreteBackup(true),
+    "backup-recusar": () => definirLembreteBackup(false),
+    "backup-adiar": () => { backupAdiadoAte = Date.now() + ADIAMENTO_BACKUP; atualizarFaixaBackup(); },
+    "backup-lembrete": () => { if (dados.config.ultimoBackup) fazerBackup(); else guiaBackup(); },
+    "lembrete-backup": () => definirLembreteBackup(!dados.config.lembreteBackup),
   };
   if (acoes[alvo.dataset.acao]) { e.preventDefault(); acoes[alvo.dataset.acao](); }
 });
@@ -822,7 +906,9 @@ document.addEventListener("change", (e) => {
 $("#dialogo").addEventListener("click", (e) => { if (e.target.id === "dialogo") fecharDialogo(); });
 // Ao voltar para o app (ex.: no dia seguinte), recarrega o formulário se nada foi digitado.
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden && ui.aba === "registrar" && !form.alterado) navegar("registrar");
+  if (document.hidden) return;
+  if (ui.aba === "registrar" && !form.alterado) navegar("registrar");
+  atualizarFaixaBackup();
 });
 
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
