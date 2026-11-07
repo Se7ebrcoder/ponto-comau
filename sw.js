@@ -1,10 +1,10 @@
 // Guarda os arquivos do app no aparelho para funcionar sem internet.
 // Ao publicar uma nova versão, aumente VERSAO para os aparelhos baixarem os arquivos novos.
-const VERSAO = "ponto-v16";
+const VERSAO = "ponto-v17";
 const ARQUIVOS = [
   "./", "index.html", "styles.css", "app.js", "xlsm.js", "comprovante.js", "manifest.webmanifest",
   "vendor/jszip.min.js", "fonts/manrope-latin-wght-normal.woff2",
-  "icons/icon-180.png", "icons/icon-192.png", "icons/icon-512.png",
+  "icons/icon-180.png", "icons/icon-192.png", "icons/icon-512.png", "icons/icon-maskable-512.png",
 ];
 
 self.addEventListener("install", (e) => {
