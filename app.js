@@ -1043,7 +1043,7 @@ if ("serviceWorker" in navigator && location.protocol !== "file:") {
     aplicarAtualizacao();
   });
   navigator.serviceWorker.register("sw.js").then((registro) => {
-    document.addEventListener("visibilitychange", () => { if (!document.hidden) registro.update().catch(() => {}); });
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) registro?.update?.().catch(() => {}); });
   }).catch(() => { /* app funciona sem offline */ });
 }
 
