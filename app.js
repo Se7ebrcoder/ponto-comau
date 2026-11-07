@@ -251,8 +251,9 @@ function trocarCliente(cliente) {
 
 // ---------- Tela: Registrar ----------
 // Campo de hora digitado no teclado numérico do celular (em vez do seletor de rolagem).
-const campoHora = (id, valor, rotulo) => `<input type="text" id="${id}" class="hora" value="${valor}"
-  inputmode="numeric" pattern="[0-9]*" maxlength="5" placeholder="--:--" autocomplete="off" enterkeyhint="next" aria-label="${rotulo}">`;
+// O exemplo "--:--" é desenhado por cima, com os dois pontos no centro exato, onde o iPhone põe o cursor.
+const campoHora = (id, valor, rotulo) => `<span class="hora-caixa"><input type="text" id="${id}" class="hora" value="${valor}"
+  inputmode="numeric" pattern="[0-9]*" maxlength="5" placeholder=" " autocomplete="off" enterkeyhint="next" aria-label="${rotulo}"><span class="hora-exemplo" aria-hidden="true"><span>--</span>:<span>--</span></span></span>`;
 
 const linhaHora = (campo, valor, rotulo) => `<div class="linha">
         <span class="lbl cresce">${rotulo}</span>
