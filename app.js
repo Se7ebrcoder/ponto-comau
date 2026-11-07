@@ -1018,12 +1018,33 @@ $("#dialogo").addEventListener("click", (e) => { if (e.target.id === "dialogo") 
 // Ao voltar para o app (ex.: no dia seguinte), recarrega o formulário se nada foi digitado.
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) return;
+  if (aplicarAtualizacao()) return;
   if (ui.aba === "registrar" && !form.alterado) navegar("registrar");
   atualizarFaixaBackup();
 });
 
+// ---------- Atualização do app ----------
+// O iPhone costuma só retomar o app aberto. Ao voltar para ele, procura versão nova;
+// quando ela fica pronta, recarrega, mas nunca no meio de um ponto sendo digitado.
+let atualizacaoPronta = false;
+function aplicarAtualizacao() {
+  if (!atualizacaoPronta || form.alterado || $("#dialogo").open || document.hidden) return false;
+  atualizacaoPronta = false;
+  location.reload();
+  return true;
+}
+
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
-  navigator.serviceWorker.register("sw.js").catch(() => { /* app funciona sem offline */ });
+  // Na primeira instalação a página já é a versão atual: só as trocas seguintes pedem recarregar.
+  let ignorarProxima = !navigator.serviceWorker.controller;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (ignorarProxima) { ignorarProxima = false; return; }
+    atualizacaoPronta = true;
+    aplicarAtualizacao();
+  });
+  navigator.serviceWorker.register("sw.js").then((registro) => {
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) registro.update().catch(() => {}); });
+  }).catch(() => { /* app funciona sem offline */ });
 }
 
 aplicarTema();
