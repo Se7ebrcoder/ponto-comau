@@ -81,7 +81,7 @@ h1 { margin: 0; font-size: 28px; font-weight: 700; letter-spacing: -.02em; }
   outline: none; padding: 6px 8px; font-variant-numeric: tabular-nums; appearance: none; -webkit-appearance: none; }
 .numero:focus { box-shadow: 0 0 0 2px var(--destaque); }
 /* Exemplo "--:--" com os dois pontos no centro. Vazio, o cursor do aparelho fica oculto e o app desenha o seu sobre os dois pontos. */
-.hora-exemplo { position: absolute; inset: 0; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 1px;
+.hora-exemplo { position: absolute; inset: 0; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 3px;
   pointer-events: none; color: var(--mudo); font-size: 19px; font-weight: 500; }
 .hora-exemplo span:first-child { text-align: right; }
 .hora-exemplo .dp { position: relative; }
