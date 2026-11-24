@@ -16,6 +16,12 @@ const MIN_13H = 780;
 const MIN_13H30 = 810;
 const MIN_18H = 1080;
 const MIN_DIA = 1440;
+// Planilha NGC: linhas dos dias 1 a 31, períodos manhã (C/D), tarde (E/F) e noite (G/H), total do dia em I.
+const LINHA_NGC = 16;
+const ULTIMA_NGC = 46;
+const FORMULA_HORAS_NGC = "F16-C16-(E16-D16)+H16-G16";
+const COLUNAS_NGC = [["C", "D"], ["E", "F"], ["G", "H"]];
+export const PERIODOS_NGC = ["Manhã", "Tarde", "Noite"];
 
 export class ErroPlanilha extends Error {}
 
@@ -28,8 +34,22 @@ const escXml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").rep
 const desXml = (s) => s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
 const pad = (n) => String(n).padStart(2, "0");
 
-/** O modelo da GME é reconhecido pelo nome do arquivo. */
+/** Os modelos da GME e da NGC são reconhecidos pelo nome do arquivo. */
 export const ehGME = (nome) => /gme/i.test(String(nome || ""));
+export const ehNGC = (nome) => /ngc/i.test(String(nome || ""));
+
+/**
+ * Trechos de um ponto da NGC (manhã, tarde e noite), em minutos desde as 00:00 da data do ponto.
+ * Tudo é contado a partir do primeiro horário: o que vem antes dele já é do dia seguinte (passa de 1440).
+ * Retorna [{ i, a, b }], com b = null se o período ainda não tem o horário de saída.
+ */
+export function trechosDosPeriodos(periodos) {
+  const cheios = (periodos || []).map(([de, ate], i) => ({ i, de, ate })).filter((p) => p.de);
+  if (!cheios.length) return [];
+  const ini = minutosDe(cheios[0].de);
+  const abs = (h) => ini + ((minutosDe(h) - ini + MIN_DIA) % MIN_DIA);
+  return cheios.map(({ i, de, ate }) => ({ i, a: abs(de), b: ate ? abs(ate) : null }));
+}
 
 /** Minutos de pausa de um lançamento: o almoço informado ou a pausa fixa de 60 min. */
 export function pausaMinutos(r) {
@@ -142,14 +162,16 @@ export async function lerInforme(JSZip, arquivo) {
 }
 
 // ---------- modelo ----------
-const MODELO_INVALIDO = "O arquivo não é uma planilha de horas conhecida. Escolha uma planilha oficial da COMAU (.xlsm) ou da GME (.xlsx).";
+const MODELO_INVALIDO = "O arquivo não é uma planilha de horas conhecida. Escolha uma planilha oficial da COMAU (.xlsm), da GME (.xlsx) ou da NGC (.xlsx).";
 const MODELO_GME_INVALIDO = "O arquivo tem GME no nome, mas não está no formato da planilha de horas da GME.";
+const MODELO_NGC_INVALIDO = "O arquivo tem NGC no nome, mas não está no formato da planilha de horas da NGC.";
 
 /**
  * Confere se o arquivo serve de modelo e extrai o que o app usa dele.
  * Qualquer planilha oficial já preenchida serve: os lançamentos são sobrescritos na geração.
- * O tipo vem do nome do arquivo: com "GME" no nome, é conferido no formato da GME.
+ * O tipo vem do nome do arquivo: com "GME" ou "NGC" no nome, é conferido no formato desse cliente.
  * Retorna { tipo, funcionario, centros, centroMaisUsado, commessas }: as listas vêm da legenda do próprio modelo.
+ * Na NGC, também { clienteFinal, local } do cabeçalho.
  */
 export async function lerModelo(JSZip, arquivo, nome = "") {
   let zip;
@@ -160,6 +182,15 @@ export async function lerModelo(JSZip, arquivo, nome = "") {
   const ws = new Planilha(await sheet.async("string"));
   const sst = textosCompartilhados(await sstArq.async("string"));
   const formatoGME = ws.formula("L3") === `SUM(H${LINHA_GME}:H${ULTIMA_GME})` && ws.formula("H9") === FORMULA_HORAS_GME;
+  const formatoNGC = ws.formula("I47") === `SUM(I${LINHA_NGC}:I${ULTIMA_NGC})` && ws.formula("I16") === FORMULA_HORAS_NGC;
+  if (ehNGC(nome)) {
+    if (!formatoNGC) throw new ErroPlanilha(MODELO_NGC_INVALIDO);
+    // H11: "NOME / FUNÇÃO / EMPRESA"; o nome é o que vem antes da primeira barra.
+    const funcionario = String(ws.atual("H11", sst) || "").split("/")[0].trim();
+    const texto = (ref) => String(ws.atual(ref, sst) ?? "").trim();
+    return { tipo: "ngc", funcionario, centros: [], centroMaisUsado: null, commessas: [], clienteFinal: texto("B11"), local: texto("D11") };
+  }
+  if (formatoNGC) throw new ErroPlanilha("Esta planilha está no formato da NGC, mas não tem NGC no nome do arquivo. Renomeie o arquivo incluindo NGC e escolha de novo.");
   if (ehGME(nome)) {
     if (!formatoGME) throw new ErroPlanilha(MODELO_GME_INVALIDO);
     // Tabela COMESSAS da planilha (colunas R e S, abaixo do cabeçalho na linha 16).
@@ -295,6 +326,7 @@ export async function gerarPlanilha(JSZip, modelo, dados) {
   const { ano, mes, registros } = dados;
   if (!modelo) throw new ErroPlanilha("Nenhum modelo de planilha configurado. Escolha um em Ajustes → Modelo da planilha.");
   if (dados.tipo === "gme") return gerarGME(JSZip, modelo, dados);
+  if (dados.tipo === "ngc") return gerarNGC(JSZip, modelo, dados);
   const doMes = registros.filter((r) => r.data.startsWith(`${ano}-${pad(mes)}-`));
   if (!doMes.length) throw new ErroPlanilha(`Não há dias lançados em ${pad(mes)}/${ano}.`);
   for (const r of doMes) {
@@ -537,8 +569,89 @@ async function gerarGME(JSZip, modelo, dados) {
   return { arquivo, dias: doMes.length, totalHoras: total };
 }
 
-/** Nome padrão do arquivo; o primeiro nome vem do campo "Funcionário" do modelo. */
+// ---------- planilha NGC ----------
+/**
+ * Na NGC, cada ponto já vem dividido em manhã, tarde e noite, e cada um vai para a sua coluna.
+ * O que passa da meia-noite vai para a linha do dia seguinte. Horário vazio é gravado como 00:00.
+ */
+async function gerarNGC(JSZip, modelo, dados) {
+  const { ano, mes, registros } = dados;
+  const prefixo = `${ano}-${pad(mes)}-`;
+  const doMes = registros.filter((r) => r.data.startsWith(prefixo));
+  if (!doMes.length) throw new ErroPlanilha(`Não há dias lançados em ${pad(mes)}/${ano}.`);
+
+  // Trechos por data: os do próprio ponto ficam no período escolhido; o que passa da meia-noite segue para o dia seguinte.
+  const proprios = {}, seguintes = {}, registroPorData = {};
+  for (const r of registros) {
+    const trechos = trechosDosPeriodos(r.periodos);
+    if (!trechos.length) continue;
+    const seguinte = diaSeguinte(r.data);
+    const doMesAtual = r.data.startsWith(prefixo);
+    if (!doMesAtual && !(seguinte.startsWith(prefixo) && trechos.some((t) => (t.b ?? 0) > MIN_DIA))) continue;
+    const aberto = trechos.find((t) => t.b === null);
+    if (aberto) throw new ErroPlanilha(`O dia ${diaCurto(r.data)} está sem o horário de saída (Até) da ${PERIODOS_NGC[aberto.i].toLowerCase()}.`);
+    if (doMesAtual) registroPorData[r.data] = r;
+    for (const { i, a, b } of trechos) {
+      if (a < MIN_DIA && doMesAtual) (proprios[r.data] ||= []).push({ i, a, b: Math.min(b, MIN_DIA) });
+      if (b > MIN_DIA && seguinte.startsWith(prefixo)) (seguintes[seguinte] ||= []).push({ a: Math.max(a, MIN_DIA) - MIN_DIA, b: b - MIN_DIA });
+    }
+  }
+
+  // Coloca os trechos de uma data nos três períodos da planilha.
+  function periodosDaData(data) {
+    const pares = [null, null, null];
+    const meus = proprios[data] || [], vindos = (seguintes[data] || []).sort((x, y) => x.a - y.a);
+    meus.forEach(({ i, a, b }) => { pares[i] = [a, b]; });
+    if (!vindos.length) return pares;
+    if (meus.length + vindos.length > 3)
+      throw new ErroPlanilha(`O dia ${diaCurto(data)} tem mais trechos de trabalho do que os 3 períodos da planilha (o turno do dia anterior passou da meia-noite).`);
+    // O que veio da noite anterior é o começo do dia: entra nos primeiros períodos, antes dos do próprio dia.
+    const primeiroMeu = meus.length ? Math.min(...meus.map((t) => t.i)) : 3;
+    if (vindos.length <= primeiroMeu) { vindos.forEach(({ a, b }, k) => { pares[k] = [a, b]; }); return pares; }
+    const todos = [...vindos, ...meus].sort((x, y) => x.a - y.a);
+    return [0, 1, 2].map((k) => (todos[k] ? [todos[k].a, todos[k].b] : null));
+  }
+
+  const zip = await JSZip.loadAsync(modelo);
+  const sheetPath = "xl/worksheets/sheet1.xml";
+  const ws = new Planilha(await zip.file(sheetPath).async("string"));
+  const textos = criarTextos(await zip.file("xl/sharedStrings.xml").async("string"));
+
+  ws.valor("L13", serialData(ano, mes, 1));
+  const diasNoMes = new Date(Date.UTC(ano, mes, 0)).getUTCDate();
+  let total = 0;
+  for (let lin = LINHA_NGC; lin <= ULTIMA_NGC; lin++) {
+    const dia = lin - LINHA_NGC + 1;
+    const data = `${prefixo}${pad(dia)}`;
+    const existe = dia <= diasNoMes;
+    const pares = existe ? periodosDaData(data) : [null, null, null];
+    let horas = 0;
+    COLUNAS_NGC.forEach(([de, ate], i) => {
+      const [a, b] = pares[i] || [0, 0];
+      // Dias do mês: período sem horário vira 00:00. Linhas além do fim do mês ficam vazias.
+      ws.valor(`${de}${lin}`, existe ? a / MIN_DIA : null);
+      ws.valor(`${ate}${lin}`, existe ? b / MIN_DIA : null);
+      horas += (b - a) / MIN_DIA;
+    });
+    ws.calculado(`I${lin}`, horas);
+    total += horas;
+    // Centro de Custo e proj. ficam em branco; a observação vai na linha do dia do ponto.
+    ws.valor(`J${lin}`, null);
+    ws.valor(`K${lin}`, null);
+    const obs = existe ? registroPorData[data]?.obs : "";
+    ws.valor(`L${lin}`, obs ? textos.indice(obs) : null, { compartilhado: true });
+  }
+  ws.calculado("I47", total);
+
+  zip.file(sheetPath, ws.xml);
+  zip.file("xl/sharedStrings.xml", textos.xmlFinal());
+  const arquivo = await zip.generateAsync({ type: "uint8array", compression: "DEFLATE" });
+  return { arquivo, dias: doMes.length, totalHoras: total * 24 };
+}
+
+/** Nome padrão do arquivo; o primeiro nome vem do campo "Funcionário" do modelo. Na NGC, vai o nome completo. */
 export function nomeArquivo(ano, mes, funcionario, tipo = "comau") {
+  if (tipo === "ngc") return `NGC_${String(funcionario || "").trim().toUpperCase() || "FUNCIONARIO"}_${pad(mes)}-${ano}.xlsx`;
   const primeiro = String(funcionario || "").trim().split(/\s+/)[0] || "Funcionario";
   return tipo === "gme"
     ? `Tabela Horas_${primeiro}_Projeto-GME_${pad(mes)}_${ano}.xlsx`

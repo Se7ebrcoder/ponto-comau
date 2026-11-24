@@ -33,6 +33,8 @@ function cortar(ctx, t, larguraMax) {
  *   coluna ("EQUIPE" ou "COMMESSA"), totais: { dias, horas },
  *   linhas: [{ dia, semana, faixa, mais1, pausa, opcao, horas, obs, semFim }]
  * }
+ * Com layout "periodos" (NGC): subtitulo ("NGC · cliente · local") e cada linha com
+ * periodos: [manhã, tarde, noite] ("08:00–12:00" ou "—") no lugar de faixa, pausa e opcao.
  * Retorna um Blob PNG.
  */
 export async function desenharComprovante(dados) {
@@ -40,7 +42,8 @@ export async function desenharComprovante(dados) {
   try { await Promise.all([400, 600, 700].map((p) => document.fonts.load(fonte(p, 28)))); } catch { /* usa a fonte do sistema */ }
 
   const alturaLinhas = dados.linhas.reduce((s, l) => s + ALTURA_LINHA + (l.obs ? ALTURA_OBS : 0), 0);
-  const topoTabela = 470;
+  const desce = dados.subtitulo ? 44 : 0; // espaço para a linha do cliente
+  const topoTabela = 470 + desce;
   const altura = topoTabela + 64 + alturaLinhas + 150;
   const canvas = document.createElement("canvas");
   canvas.width = L;
@@ -56,24 +59,40 @@ export async function desenharComprovante(dados) {
   ctx.letterSpacing = "0px";
   texto(ctx, dados.funcionario || "Registro de horas", M, 162, { peso: 700, tam: 44 });
   texto(ctx, dados.titulo, M, 212, { peso: 500, tam: 30, cor: COR.mudo });
+  if (dados.subtitulo) {
+    ctx.font = fonte(700, 26);
+    texto(ctx, cortar(ctx, dados.subtitulo, L - 2 * M), M, 256, { peso: 700, tam: 26, cor: COR.azul });
+  }
 
   // Totais
   const colunas = [["Dias", String(dados.totais.dias)], ["Horas", dados.totais.horas]];
   const xs = [M, M + 220];
   colunas.forEach(([rotulo, valor], i) => {
-    texto(ctx, rotulo, xs[i], 290, { peso: 500, tam: 24, cor: COR.mudo });
-    texto(ctx, valor, xs[i], 350, { peso: 400, tam: 48 });
+    texto(ctx, rotulo, xs[i], 290 + desce, { peso: 500, tam: 24, cor: COR.mudo });
+    texto(ctx, valor, xs[i], 350 + desce, { peso: 400, tam: 48 });
   });
   ctx.fillStyle = COR.linha;
-  ctx.fillRect(M, 396, L - 2 * M, 2);
+  ctx.fillRect(M, 396 + desce, L - 2 * M, 2);
 
   // Cabeçalho da tabela
+  const periodos = dados.layout === "periodos";
   const X = { dia: M, faixa: M + 136, pausa: M + 396, opcao: M + 508, horas: L - M };
   const larguraOpcao = X.horas - 96 - X.opcao;
+  // NGC: três colunas iguais entre o dia e o total.
+  const larguraPeriodo = (X.horas - 120 - X.faixa) / 3;
+  const XP = [0, 1, 2].map((i) => X.faixa + i * larguraPeriodo);
+  const cabecalho = periodos
+    ? [["DIA", X.dia, "left"], ["MANHÃ", XP[0], "left"], ["TARDE", XP[1], "left"], ["NOITE", XP[2], "left"], ["TOTAL", X.horas, "right"]]
+    : [["DIA", X.dia, "left"], ["HORÁRIO", X.faixa, "left"], ["PAUSA", X.pausa, "left"], [dados.coluna, X.opcao, "left"], ["HORAS", X.horas, "right"]];
   ctx.letterSpacing = "2px";
-  [["DIA", X.dia, "left"], ["HORÁRIO", X.faixa, "left"], ["PAUSA", X.pausa, "left"], [dados.coluna, X.opcao, "left"], ["HORAS", X.horas, "right"]]
-    .forEach(([t, x, a]) => texto(ctx, t, x, 452, { peso: 600, tam: 20, cor: COR.mudo, alinhar: a }));
+  cabecalho.forEach(([t, x, a]) => texto(ctx, t, x, 452 + desce, { peso: 600, tam: 20, cor: COR.mudo, alinhar: a }));
   ctx.letterSpacing = "0px";
+
+  const marcaMais1 = (x, base) => {
+    ctx.strokeStyle = COR.azul; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.roundRect(x, base - 24, 44, 28, 7); ctx.stroke();
+    texto(ctx, "+1", x + 22, base - 3, { peso: 700, tam: 18, cor: COR.azul, alinhar: "center" });
+  };
 
   // Linhas
   let y = topoTabela;
@@ -83,16 +102,19 @@ export async function desenharComprovante(dados) {
     const base = y + 49;
     texto(ctx, l.dia, X.dia, base, { peso: 700, tam: 32 });
     texto(ctx, l.semana, X.dia + 50, base, { peso: 500, tam: 22, cor: COR.mudo });
-    const w = texto(ctx, l.faixa, X.faixa, base, { peso: 600, tam: 30 });
-    if (l.mais1) {
-      const cx = X.faixa + w + 12;
-      ctx.strokeStyle = COR.azul; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.roundRect(cx, base - 24, 44, 28, 7); ctx.stroke();
-      texto(ctx, "+1", cx + 22, base - 3, { peso: 700, tam: 18, cor: COR.azul, alinhar: "center" });
+    if (periodos) {
+      l.periodos.forEach((t, k) => {
+        const vazio = t === "—";
+        const w = texto(ctx, t, XP[k], base, { peso: vazio ? 500 : 600, tam: 26, cor: vazio ? COR.mudo : COR.texto });
+        if (k === 2 && l.mais1 && !vazio) marcaMais1(XP[k] + w + 8, base);
+      });
+    } else {
+      const w = texto(ctx, l.faixa, X.faixa, base, { peso: 600, tam: 30 });
+      if (l.mais1) marcaMais1(X.faixa + w + 12, base);
+      texto(ctx, l.pausa, X.pausa, base, { peso: 500, tam: 24, cor: COR.mudo });
+      ctx.font = fonte(500, 22);
+      texto(ctx, cortar(ctx, l.opcao, larguraOpcao), X.opcao, base, { peso: 500, tam: 22 });
     }
-    texto(ctx, l.pausa, X.pausa, base, { peso: 500, tam: 24, cor: COR.mudo });
-    ctx.font = fonte(500, 22);
-    texto(ctx, cortar(ctx, l.opcao, larguraOpcao), X.opcao, base, { peso: 500, tam: 22 });
     if (l.semFim) texto(ctx, "sem fim", X.horas, base, { peso: 600, tam: 26, cor: COR.perigo, alinhar: "right" });
     else texto(ctx, l.horas, X.horas, base, { peso: 600, tam: 30, alinhar: "right" });
     if (l.obs) {

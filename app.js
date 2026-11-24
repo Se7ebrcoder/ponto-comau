@@ -1,10 +1,14 @@
-import { ErroPlanilha, ehGME, gerarPlanilha, lerModelo, minutosDe, nomeArquivo, pausaMinutos } from "./xlsm.js";
+import { ErroPlanilha, PERIODOS_NGC, ehGME, ehNGC, gerarPlanilha, lerModelo, minutosDe, nomeArquivo, pausaMinutos, trechosDosPeriodos } from "./xlsm.js";
 import { desenharComprovante } from "./comprovante.js";
 
 const CHAVE = "ponto-comau.v1";
 const CHAVE_MODELO = "ponto-comau.modelo";
 const CHAVE_MODELO_GME = "ponto-comau.modelo-gme";
-const NOME_CLIENTE = { comau: "COMAU", gme: "GME" };
+const CHAVE_MODELO_NGC = "ponto-comau.modelo-ngc";
+const CLIENTES = ["comau", "gme", "ngc"];
+const NOME_CLIENTE = { comau: "COMAU", gme: "GME", ngc: "NGC" };
+const CHAVES_MODELO = { comau: CHAVE_MODELO, gme: CHAVE_MODELO_GME, ngc: CHAVE_MODELO_NGC };
+const CHAVE_TAXA = { comau: "taxaPadrao", gme: "taxaPadraoGME", ngc: "taxaPadraoNGC" };
 const CHAVE_TEMA = "ponto-comau.tema";
 const MESES = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
 const SEMANA = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
@@ -41,7 +45,16 @@ function completarHora(el) {
 // ---------- Cálculos ----------
 // Enquanto o almoço está sendo digitado, só vale quando os dois horários estão completos.
 const pausaDe = (r) => pausaMinutos(horaOk(r.almocoSaida) && horaOk(r.almocoVolta) ? r : { jantar: r.jantar });
+// NGC: o ponto é dividido em manhã, tarde e noite (De/Até). Horário incompleto conta como vazio.
+const periodosVazios = () => [["", ""], ["", ""], ["", ""]];
+const trechosValidos = (periodos) => trechosDosPeriodos(periodos.map(([de, ate]) => [horaOk(de) ? de : "", horaOk(de) && horaOk(ate) ? ate : ""]));
+function resumoPeriodos(periodos) {
+  const cheios = periodos.filter(([de]) => de);
+  return { inicio: cheios[0]?.[0] || "", fim: cheios.length && cheios.every(([, ate]) => ate) ? cheios.at(-1)[1] : "" };
+}
+const textoPeriodos = (r) => (r.periodos || []).filter(([de]) => de).map(([de, ate]) => `${de}–${ate || "…"}`).join(" · ");
 function minutosTrabalhados(r) {
+  if (r.periodos) return trechosValidos(r.periodos).reduce((s, { a, b }) => s + (b !== null && b > a ? b - a : 0), 0);
   if (!horaOk(r.inicio) || !horaOk(r.fim)) return 0;
   let min = minutosDe(r.fim) - minutosDe(r.inicio);
   if (min < 0) min += 1440;
@@ -50,7 +63,8 @@ function minutosTrabalhados(r) {
 // Valor de cada dia arredondado a centavos, como no informe; o mês soma os dias.
 const valorDoDia = (r) => Math.round((minutosTrabalhados(r) / 60) * (r.taxa || 0) * 100) / 100;
 const fmtHM = (min) => `${pad(Math.floor(min / 60))}:${pad(min % 60)}`;
-const viraDia = (r) => horaOk(r.inicio) && horaOk(r.fim) && minutosDe(r.fim) < minutosDe(r.inicio);
+const viraDia = (r) => (r.periodos ? trechosValidos(r.periodos).some(({ b }) => b > 1440)
+  : horaOk(r.inicio) && horaOk(r.fim) && minutosDe(r.fim) < minutosDe(r.inicio));
 
 function lerTaxa(texto) {
   // Com vírgula, o ponto é separador de milhar (1.234,50); sem vírgula, é decimal (47.50).
@@ -73,16 +87,16 @@ const temPastaNoAparelho = ehAndroid && !!window.showDirectoryPicker;
 // ---------- Armazenamento (só neste aparelho) ----------
 const PADRAO = { registros: {}, config: { taxaPadrao: 0, centroPadrao: null, jantarPadrao: true, commessaPadrao: "", ultimoBackup: null, lembreteBackup: null, alteradoEm: null, pastaBackup: null, pastaFalhou: false } };
 let dados = carregar();
-let modelos = carregarModelos(); // { comau, gme }: cada um { arquivo, importadoEm, funcionario, centros, base64 } ou null
+let modelos = carregarModelos(); // { comau, gme, ngc }: cada um { arquivo, importadoEm, funcionario, centros, base64 } ou null
 
-// Cada cliente tem seus pontos: o mesmo dia pode ter um ponto da COMAU e outro da GME.
-function chaveRegistro(data, cliente) { return cliente === "gme" ? `${data}#gme` : data; }
+// Cada cliente tem seus pontos: o mesmo dia pode ter um ponto de cada cliente.
+function chaveRegistro(data, cliente) { return cliente && cliente !== "comau" ? `${data}#${cliente}` : data; }
 
-// Pontos antigos não têm cliente: almoço ou commessa indicam GME; os demais são da COMAU.
+// Pontos antigos não têm cliente: períodos indicam NGC; almoço ou commessa, GME; os demais são da COMAU.
 function normalizarRegistros(registros) {
   const saida = {};
   for (const r of Object.values(registros)) {
-    const cliente = r.cliente || (r.almocoSaida || r.commessa ? "gme" : "comau");
+    const cliente = r.cliente || (r.periodos ? "ngc" : r.almocoSaida || r.commessa ? "gme" : "comau");
     saida[chaveRegistro(r.data, cliente)] = { ...r, cliente };
   }
   return saida;
@@ -98,7 +112,7 @@ function carregar() {
 
 function carregarModelos() {
   const ler = (chave) => { try { return JSON.parse(localStorage.getItem(chave)); } catch { return null; } };
-  const m = { comau: ler(CHAVE_MODELO), gme: ler(CHAVE_MODELO_GME) };
+  const m = { comau: ler(CHAVE_MODELO), gme: ler(CHAVE_MODELO_GME), ngc: ler(CHAVE_MODELO_NGC) };
   // Antes havia um modelo só, guardado sempre na mesma chave, que podia ser o da GME.
   if (ehGME(m.comau?.arquivo)) {
     m.gme = m.gme || m.comau;
@@ -108,16 +122,18 @@ function carregarModelos() {
   return m;
 }
 
-const doisClientes = () => !!(modelos.comau && modelos.gme);
+const clientesComModelo = () => CLIENTES.filter((c) => modelos[c]);
+const variosClientes = () => clientesComModelo().length > 1;
 function clienteInicial() {
   const salvo = dados.config.cliente;
   if (salvo && modelos[salvo]) return salvo;
-  return modelos.gme && !modelos.comau ? "gme" : "comau";
+  return clientesComModelo()[0] || "comau";
 }
 
-// No cliente GME, o ponto pede almoço e commessa.
+// No cliente GME, o ponto pede almoço e commessa; na NGC, os períodos manhã, tarde e noite.
 const modeloGME = () => ui.cliente === "gme";
-const taxaPadrao = () => (modeloGME() ? dados.config.taxaPadraoGME ?? dados.config.taxaPadrao : dados.config.taxaPadrao);
+const modeloNGC = () => ui.cliente === "ngc";
+const taxaPadrao = () => dados.config[CHAVE_TAXA[ui.cliente]] ?? dados.config.taxaPadrao;
 
 // Opções do ponto, lidas da legenda de cada modelo.
 const centroPadrao = () => dados.config.centroPadrao || modelos.comau?.centros?.[0] || "";
@@ -198,11 +214,14 @@ const ui = { aba: "registrar", ano: hoje.getFullYear(), mes: hoje.getMonth() + 1
 // registro em edição, aberto pela lista de Registros (ou null se novo).
 let form;
 const formNovo = (data = chaveData(new Date())) => ({
-  data, inicio: "", fim: "", jantar: !modeloGME() && dados.config.jantarPadrao, almocoSaida: "", almocoVolta: "",
+  data, inicio: "", fim: "", jantar: ui.cliente === "comau" && dados.config.jantarPadrao, almocoSaida: "", almocoVolta: "",
+  // Só a NGC tem períodos: nos outros clientes o cálculo usa início, fim e pausa.
+  periodos: modeloNGC() ? periodosVazios() : undefined,
   taxa: taxaPadrao(), commessa: dados.config.commessaPadrao || "", centro: centroPadrao(), obs: "", original: null, alterado: false,
 });
 const formDe = (r) => ({
   data: r.data, inicio: r.inicio || "", fim: r.fim || "", jantar: !!r.jantar, almocoSaida: r.almocoSaida || "", almocoVolta: r.almocoVolta || "",
+  periodos: r.periodos ? r.periodos.map((p) => [...p]) : modeloNGC() ? periodosVazios() : undefined,
   taxa: r.taxa ?? taxaPadrao(), commessa: r.commessa ?? (dados.config.commessaPadrao || ""), centro: r.centro || centroPadrao(), obs: r.obs || "", original: r.data, alterado: false,
 });
 function navegar(aba, { manterForm = false } = {}) {
@@ -231,13 +250,13 @@ function render() {
   atualizarFaixaBackup();
 }
 
-// Só aparece com os dois modelos: pontos, totais, planilha e comprovante seguem o cliente escolhido.
+// Só aparece com mais de um modelo: pontos, totais, planilha e comprovante seguem o cliente escolhido.
 function seletorCliente() {
-  if (!doisClientes()) return "";
+  if (!variosClientes()) return "";
   const opcao = (c) => `<button data-acao="cliente" data-valor="${c}" aria-pressed="${ui.cliente === c}">${NOME_CLIENTE[c]}</button>`;
   return `<div class="linha">
       <span class="lbl-forte">Cliente</span>
-      <div class="seg" role="group" aria-label="Cliente">${opcao("comau")}${opcao("gme")}</div>
+      <div class="seg" role="group" aria-label="Cliente">${clientesComModelo().map(opcao).join("")}</div>
     </div>`;
 }
 
@@ -261,9 +280,26 @@ const linhaHora = (campo, valor, rotulo) => `<div class="linha">
         <button class="link" data-acao="agora" data-campo="${campo}">Agora</button>
       </div>`;
 
+// NGC: De/Até de manhã, tarde e noite, como na planilha. "Agora" preenche o próximo horário vazio.
+function blocoPeriodos(f) {
+  if (!f.periodos) f.periodos = periodosVazios();
+  const linha = (i) => `<span class="lbl">${PERIODOS_NGC[i]}${i === 2 ? ' <span class="mais1" id="c-mais1" hidden>+1</span>' : ""}</span>
+        ${campoHora(`f-p${i}-de`, f.periodos[i][0], `${PERIODOS_NGC[i]}, de`)}
+        ${campoHora(`f-p${i}-ate`, f.periodos[i][1], `${PERIODOS_NGC[i]}, até`)}`;
+  return `<div class="linha">
+        <span class="lbl cresce">Horários</span>
+        <button class="link" data-acao="agora-periodo">Agora</button>
+      </div>
+      <div class="periodos">
+        <span></span><span class="dica">De</span><span class="dica">Até</span>
+        ${[0, 1, 2].map(linha).join("")}
+      </div>`;
+}
+
 function telaRegistrar() {
   const f = form;
   const gme = modeloGME();
+  const ngc = modeloNGC();
   const pausaPendente = gme && f.original && f.jantar && !f.almocoSaida;
   const comPausa = f.jantar || (f.almocoSaida && f.almocoVolta);
   return `<div class="total">
@@ -277,14 +313,14 @@ function telaRegistrar() {
         <span class="valor" id="c-data"></span>
         <input type="date" id="f-data" value="${f.data}" aria-label="Data">
       </label>
-      ${linhaHora("inicio", f.inicio, "Início")}
+      ${ngc ? blocoPeriodos(f) : `${linhaHora("inicio", f.inicio, "Início")}
       ${gme ? `${linhaHora("almoco-saida", f.almocoSaida, "Saída almoço")}${linhaHora("almoco-volta", f.almocoVolta, "Volta almoço")}` : ""}
       <div class="linha">
         <span class="lbl cresce">Fim <span class="mais1" id="c-mais1" hidden>+1</span></span>
         ${campoHora("f-fim", f.fim, "Fim")}
         <button class="link" data-acao="agora" data-campo="fim">Agora</button>
-      </div>
-      ${gme ? "" : `<div class="linha">
+      </div>`}
+      ${gme || ngc ? "" : `<div class="linha">
         <span class="lbl">Pausa (min)</span>
         <div class="seg" role="group" aria-label="Pausa">
           <button data-acao="pausa" data-valor="0" aria-pressed="${!comPausa}">0</button>
@@ -299,7 +335,7 @@ function telaRegistrar() {
       ${gme ? `<div class="linha empilhada">
         <span class="lbl">Commessa</span>
         ${campoCommessa("f-commessa", f.commessa, "Commessa")}
-      </div>` : modelos.comau ? `<div class="linha empilhada">
+      </div>` : !ngc && modelos.comau ? `<div class="linha empilhada">
         <span class="lbl">Centro de custo</span>
         ${campoCentro("f-centro", f.centro, "Centro de custo")}
       </div>` : ""}
@@ -313,10 +349,15 @@ function telaRegistrar() {
 
 function lerFormulario() {
   form.data = $("#f-data").value;
-  form.inicio = $("#f-inicio").value;
-  form.fim = $("#f-fim").value;
   form.obs = $("#f-obs").value.trim();
   form.taxa = lerTaxa($("#f-taxa").value);
+  if (modeloNGC()) {
+    form.periodos = [0, 1, 2].map((i) => [$(`#f-p${i}-de`).value, $(`#f-p${i}-ate`).value]);
+    Object.assign(form, resumoPeriodos(form.periodos), { jantar: false });
+    return;
+  }
+  form.inicio = $("#f-inicio").value;
+  form.fim = $("#f-fim").value;
   if (modeloGME()) {
     form.jantar = false;
     form.almocoSaida = $("#f-almoco-saida").value;
@@ -338,17 +379,43 @@ function atualizarCalculo() {
 
 function validar(v) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(v.data)) return "Informe a data.";
+  const erroHorarios = modeloNGC() ? validarPeriodos(v.periodos) : validarTurno(v);
+  if (erroHorarios) return erroHorarios;
+  if (!v.taxa) return "Informe o preço por hora (ex.: 50 ou 47,50). Para já vir preenchido, defina o padrão em Ajustes.";
+  if (dados.registros[chaveRegistro(v.data, ui.cliente)] && v.data !== v.original) return `Já existe um registro em ${curta(v.data)}. Para alterá-lo, toque nele em Registros.`;
+  const conflito = pontoSobreposto(v);
+  if (conflito) return `Este horário se sobrepõe ao ponto da ${NOME_CLIENTE[conflito.cliente]} de ${curta(conflito.data)} (${conflito.inicio}–${conflito.fim}).`;
+  return "";
+}
+
+function validarTurno(v) {
   if (!v.inicio) return "Informe o horário de início.";
   if (!horaOk(v.inicio)) return `Horário de início inválido ("${v.inicio}"). Digite no formato hh:mm, ex.: 14:35.`;
   if (v.fim && !horaOk(v.fim)) return `Horário de fim inválido ("${v.fim}"). Digite no formato hh:mm, ex.: 23:30.`;
   if (v.fim && v.fim === v.inicio) return "Início e fim não podem ser iguais.";
   if (v.fim && v.jantar && minutosTrabalhados({ ...v, jantar: false }) <= 60) return "O turno tem 1h ou menos: use pausa 0 ou corrija os horários.";
-  const erroAlmoco = validarAlmoco(v);
-  if (erroAlmoco) return erroAlmoco;
-  if (!v.taxa) return "Informe o preço por hora (ex.: 50 ou 47,50). Para já vir preenchido, defina o padrão em Ajustes.";
-  if (dados.registros[chaveRegistro(v.data, ui.cliente)] && v.data !== v.original) return `Já existe um registro em ${curta(v.data)}. Para alterá-lo, toque nele em Registros.`;
-  const conflito = pontoSobreposto(v);
-  if (conflito) return `Este horário se sobrepõe ao ponto da ${NOME_CLIENTE[conflito.cliente]} de ${curta(conflito.data)} (${conflito.inicio}–${conflito.fim}).`;
+  return validarAlmoco(v);
+}
+
+// NGC: cada período com De e Até, em ordem ao longo do dia. Só o último período pode ficar sem o Até (ponto em aberto).
+function validarPeriodos(periodos) {
+  const nome = (i) => PERIODOS_NGC[i].toLowerCase();
+  for (let i = 0; i < 3; i++) {
+    const [de, ate] = periodos[i];
+    if (de && !horaOk(de)) return `Horário "De" da ${nome(i)} inválido ("${de}"). Digite no formato hh:mm, ex.: 08:00.`;
+    if (ate && !horaOk(ate)) return `Horário "Até" da ${nome(i)} inválido ("${ate}"). Digite no formato hh:mm, ex.: 12:00.`;
+    if (ate && !de) return `Informe o horário "De" da ${nome(i)}.`;
+  }
+  const cheios = [0, 1, 2].filter((i) => periodos[i][0]);
+  if (!cheios.length) return "Informe o horário de início (De) de pelo menos um período: manhã, tarde ou noite.";
+  const aberto = cheios.find((i) => !periodos[i][1]);
+  if (aberto !== undefined && aberto !== cheios.at(-1)) return `Informe o horário "Até" da ${nome(aberto)}.`;
+  let anterior = null;
+  for (const { i, a, b } of trechosDosPeriodos(periodos)) {
+    if (anterior !== null && a < anterior) return `A ${nome(i)} precisa começar depois do fim do período anterior.`;
+    if (b !== null && b <= a) return `Na ${nome(i)}, o "Até" precisa ser depois do "De".`;
+    anterior = b ?? a;
+  }
   return "";
 }
 
@@ -389,7 +456,8 @@ function salvarRegistro() {
   if (erro) return mostrarErro("Não foi possível salvar", erro);
   if (form.original && form.original !== form.data) delete dados.registros[chaveRegistro(form.original, ui.cliente)];
   const { data, inicio, fim, jantar, almocoSaida, almocoVolta, taxa, commessa, centro, obs } = form;
-  const registro = { data, cliente: ui.cliente, inicio, fim, jantar, almocoSaida, almocoVolta, taxa, obs, ...(modeloGME() ? { commessa } : { centro }) };
+  const extra = modeloNGC() ? { periodos: form.periodos } : modeloGME() ? { commessa } : { centro };
+  const registro = { data, cliente: ui.cliente, inicio, fim, jantar, almocoSaida, almocoVolta, taxa, obs, ...extra };
   dados.registros[chaveRegistro(data, ui.cliente)] = registro;
   if (!salvar()) return;
   const editando = form.original;
@@ -420,8 +488,8 @@ function telaRegistros() {
   const itens = lista.map((r) => {
     const d = dataDe(r.data);
     const completo = r.inicio && r.fim;
-    const pausa = r.almocoSaida && r.almocoVolta ? `almoço ${r.almocoSaida}–${r.almocoVolta}` : r.jantar ? "pausa 60 min" : "sem pausa";
-    const opcao = modeloGME() ? (r.commessa ? `commessa ${rotuloCommessa(r.commessa)}` : "") : (r.centro && r.centro !== centroPadrao() ? r.centro.trim() : "");
+    const pausa = r.periodos ? textoPeriodos(r) : r.almocoSaida && r.almocoVolta ? `almoço ${r.almocoSaida}–${r.almocoVolta}` : r.jantar ? "pausa 60 min" : "sem pausa";
+    const opcao = modeloGME() ? (r.commessa ? `commessa ${rotuloCommessa(r.commessa)}` : "") : modeloNGC() ? "" : (r.centro && r.centro !== centroPadrao() ? r.centro.trim() : "");
     const meta = [completo ? `${fmtHM(minutosTrabalhados(r))} h` : "", pausa, opcao, r.obs].filter(Boolean).join(" · ");
     return `<li><button class="reg" data-acao="editar" data-data="${r.data}" aria-label="Editar ${curta(r.data)}">
         <span class="reg-dia"><b>${d.getDate()}</b><small>${SEMANA[d.getDay()]}</small></span>
@@ -463,8 +531,9 @@ async function escolherModelo() {
     buffer = await arq.arrayBuffer();
     lido = await lerModelo(window.JSZip, buffer, arq.name);
   } catch (e) { return mostrarErro("Modelo inválido", mensagemDe(e)); }
-  const novo = { arquivo: arq.name, importadoEm: new Date().toISOString(), funcionario: lido.funcionario, centros: lido.centros, commessas: lido.commessas, base64: paraBase64(buffer) };
-  try { localStorage.setItem(lido.tipo === "gme" ? CHAVE_MODELO_GME : CHAVE_MODELO, JSON.stringify(novo)); } catch {
+  const novo = { arquivo: arq.name, importadoEm: new Date().toISOString(), funcionario: lido.funcionario, centros: lido.centros, commessas: lido.commessas,
+    ...(lido.tipo === "ngc" ? { clienteFinal: lido.clienteFinal, local: lido.local } : {}), base64: paraBase64(buffer) };
+  try { localStorage.setItem(CHAVES_MODELO[lido.tipo], JSON.stringify(novo)); } catch {
     return mostrarErro("Não foi possível salvar o modelo", "O armazenamento do aparelho está cheio ou bloqueado. Libere espaço e tente novamente.");
   }
   modelos[lido.tipo] = novo;
@@ -484,7 +553,7 @@ async function gerar() {
   if (!info) {
     return abrirDialogo(`<div class="folha">
         <h2>Escolha o modelo da planilha</h2>
-        <p class="sub-folha">Selecione no app Arquivos uma planilha de horas de qualquer mês (COMAU ou GME). Ela fica guardada só neste aparelho e serve de base para as próximas.</p>
+        <p class="sub-folha">Selecione no app Arquivos uma planilha de horas de qualquer mês (COMAU, GME ou NGC). Ela fica guardada só neste aparelho e serve de base para as próximas.</p>
         <div class="pilha">
           <button class="primario" data-acao="modelo">Escolher planilha modelo</button>
           <button class="secundario" data-acao="fechar">Agora não</button>
@@ -499,11 +568,11 @@ async function gerar() {
     const doMes = registrosDoMes(ano, mes);
     const r = await gerarPlanilha(window.JSZip, deBase64(info.base64), {
       tipo, ano, mes, centroPadrao: centroPadrao(), commessaPadrao: dados.config.commessaPadrao,
-      // Na GME, o fim de um turno do mês anterior pode cair no dia 1, por isso vão todos os registros do cliente.
-      registros: tipo === "gme" ? Object.values(dados.registros).filter((x) => x.cliente === "gme") : doMes,
+      // Na GME e na NGC, o fim de um turno do mês anterior pode cair no dia 1, por isso vão todos os registros do cliente.
+      registros: tipo === "comau" ? doMes : Object.values(dados.registros).filter((x) => x.cliente === tipo),
     });
     const valor = doMes.filter((x) => x.fim).reduce((s, x) => s + valorDoDia(x), 0);
-    const arquivo = new File([r.arquivo], nomeArquivo(ano, mes, info.funcionario, tipo), { type: tipo === "gme" ? MIME_XLSX : MIME_XLSM });
+    const arquivo = new File([r.arquivo], nomeArquivo(ano, mes, info.funcionario, tipo), { type: tipo === "comau" ? MIME_XLSM : MIME_XLSX });
     // O comprovante já fica pronto aqui: o iPhone só compartilha arquivos prontos no toque do botão.
     const comprovante = await criarComprovante(ano, mes);
     abrirDialogo(`<div class="folha">
@@ -560,16 +629,27 @@ async function criarComprovante(ano, mes) {
   const completos = lista.filter((r) => r.inicio && r.fim);
   const agora = new Date();
   const funcionario = modelos[ui.cliente]?.funcionario || "";
-  const dois = doisClientes();
-  const imagem = await desenharComprovante({
+  const dois = variosClientes();
+  const geradoEm = `${agora.toLocaleDateString("pt-BR")} às ${horaAgora()}`;
+  const totais = { dias: completos.length, horas: fmtHM(completos.reduce((s, r) => s + minutosTrabalhados(r), 0)) };
+  const imagem = modeloNGC() ? await desenharComprovante({
+    // NGC: colunas como na planilha (manhã, tarde, noite e total), com o cabeçalho do cliente.
+    layout: "periodos", funcionario, titulo: `${MESES[mes - 1]} de ${ano}`,
+    subtitulo: ["NGC", modelos.ngc?.clienteFinal, modelos.ngc?.local].filter(Boolean).join(" · "),
+    geradoEm, totais,
+    linhas: lista.map((r) => {
+      const d = dataDe(r.data);
+      return {
+        dia: pad(d.getDate()), semana: SEMANA[d.getDay()], mais1: viraDia(r),
+        periodos: [0, 1, 2].map((i) => { const [de, ate] = r.periodos?.[i] || ["", ""]; return de ? `${de}–${ate || "…"}` : "—"; }),
+        horas: fmtHM(minutosTrabalhados(r)), obs: r.obs || "", semFim: !r.fim,
+      };
+    }),
+  }) : await desenharComprovante({
     funcionario,
     titulo: `${MESES[mes - 1]} de ${ano}${dois ? ` · ${NOME_CLIENTE[ui.cliente]}` : ""}`,
     coluna: modeloGME() ? "COMMESSA" : "EQUIPE",
-    geradoEm: `${agora.toLocaleDateString("pt-BR")} às ${horaAgora()}`,
-    totais: {
-      dias: completos.length,
-      horas: fmtHM(completos.reduce((s, r) => s + minutosTrabalhados(r), 0)),
-    },
+    geradoEm, totais,
     linhas: lista.map((r) => {
       const d = dataDe(r.data);
       return {
@@ -581,7 +661,7 @@ async function criarComprovante(ano, mes) {
     }),
   });
   const primeiro = funcionario.trim().split(/\s+/)[0];
-  const partes = ["Comprovante_Horas", primeiro, dois && NOME_CLIENTE[ui.cliente], pad(mes), ano].filter(Boolean);
+  const partes = ["Comprovante_Horas", primeiro, (dois || modeloNGC()) && NOME_CLIENTE[ui.cliente], pad(mes), ano].filter(Boolean);
   return new File([imagem], `${partes.join("_")}.png`, { type: "image/png" });
 }
 
@@ -654,7 +734,7 @@ function telaAjustes() {
       <div class="seg" role="group" aria-label="Tema">${opcaoTema("auto", "Auto")}${opcaoTema("light", "Claro")}${opcaoTema("dark", "Escuro")}</div>
     </div>
 
-    <h2 class="secao">Novos registros${doisClientes() ? ` · ${NOME_CLIENTE[ui.cliente]}` : ""}</h2>
+    <h2 class="secao">Novos registros${variosClientes() ? ` · ${NOME_CLIENTE[ui.cliente]}` : ""}</h2>
     <div class="linha">
       <span class="lbl-forte cresce">Preço por hora padrão</span>
       <span class="unidade">R$</span>
@@ -663,7 +743,7 @@ function telaAjustes() {
     ${modeloGME() ? `<div class="linha empilhada">
       <span class="lbl-forte">Commessa padrão</span>
       ${campoCommessa("a-commessa", c.commessaPadrao, "Commessa padrão")}
-    </div>` : `${modelos.comau ? `<div class="linha empilhada">
+    </div>` : modeloNGC() ? "" : `${modelos.comau ? `<div class="linha empilhada">
       <span class="lbl-forte">Centro de custo padrão</span>
       ${campoCentro("a-centro", centroPadrao(), "Centro de custo padrão")}
     </div>` : ""}<div class="linha alta">
@@ -681,7 +761,8 @@ function telaAjustes() {
     <h2 class="secao">Modelo da planilha</h2>
     ${linhaModelo("comau")}
     ${linhaModelo("gme")}
-    <p class="dica" style="margin:10px 0 0">Qualquer planilha já feita serve. Arquivo com GME no nome vira o modelo da GME. Fica só neste aparelho.</p>
+    ${linhaModelo("ngc")}
+    <p class="dica" style="margin:10px 0 0">Qualquer planilha já feita serve. Arquivo com GME ou NGC no nome vira o modelo desse cliente. Fica só neste aparelho.</p>
 
     <h2 class="secao">Backup</h2>
     <div class="linha alta">
@@ -718,7 +799,7 @@ function salvarTaxaPadrao() {
   const campo = $("#a-taxa").value.trim();
   const taxa = /^0*([.,]0*)?$/.test(campo) ? 0 : lerTaxa(campo);
   if (taxa === null) { mostrarErro("Ajustes não salvos", "Informe o preço por hora (ex.: 50 ou 47,50)."); return null; }
-  dados.config[modeloGME() ? "taxaPadraoGME" : "taxaPadrao"] = taxa;
+  dados.config[CHAVE_TAXA[ui.cliente]] = taxa;
   const commessa = $("#a-commessa");
   if (commessa) dados.config.commessaPadrao = commessa.value.trim();
   const centro = $("#a-centro");
@@ -920,10 +1001,11 @@ async function restaurarBackup() {
   const dataBackup = lido.exportadoEm || null;
   dados = { registros: normalizarRegistros(lido.registros), config: { ...PADRAO.config, ...lido.config, ultimoBackup: dataBackup, alteradoEm: dataBackup, pastaBackup: null, pastaFalhou: false } };
   // Backups antigos trazem um único modelo, no campo "modelo".
-  const doBackup = lido.modelos || (lido.modelo ? { [ehGME(lido.modelo.arquivo) ? "gme" : "comau"]: lido.modelo } : {});
+  const doBackup = lido.modelos || (lido.modelo ? { [ehNGC(lido.modelo.arquivo) ? "ngc" : ehGME(lido.modelo.arquivo) ? "gme" : "comau"]: lido.modelo } : {});
   for (const [tipo, m] of Object.entries(doBackup)) {
     if (!m?.base64) continue;
-    try { localStorage.setItem(tipo === "gme" ? CHAVE_MODELO_GME : CHAVE_MODELO, JSON.stringify(m)); modelos[tipo] = m; } catch { /* registros restaurados mesmo assim */ }
+    if (!CHAVES_MODELO[tipo]) continue;
+    try { localStorage.setItem(CHAVES_MODELO[tipo], JSON.stringify(m)); modelos[tipo] = m; } catch { /* registros restaurados mesmo assim */ }
   }
   ui.cliente = clienteInicial();
   if (salvar({ alterou: false })) avisar(`${qtd} dias restaurados`);
@@ -970,6 +1052,13 @@ document.addEventListener("click", (e) => {
   if (alvo.dataset.aba) return navegar(alvo.dataset.aba);
   const acoes = {
     agora: () => { $(`#f-${alvo.dataset.campo}`).value = horaAgora(); form.alterado = true; atualizarCalculo(); },
+    "agora-periodo": () => {
+      const vazio = [...document.querySelectorAll(".periodos .hora")].find((el) => !el.value);
+      if (!vazio) return avisar("Todos os horários já estão preenchidos");
+      vazio.value = horaAgora();
+      form.alterado = true;
+      atualizarCalculo();
+    },
     pausa: () => {
       form.jantar = alvo.dataset.valor === "60";
       form.almocoSaida = form.almocoVolta = "";
