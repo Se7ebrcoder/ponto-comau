@@ -33,6 +33,14 @@ const fracao = (hhmm) => minutosDe(hhmm) / 1440;
 const escXml = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const desXml = (s) => s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
 const pad = (n) => String(n).padStart(2, "0");
+// Geração por período (conferência): só as datas entre de e ate entram; as outras linhas ficam em branco.
+const dentroDoPeriodo = (periodo) => (data) => !periodo || (data >= periodo.de && data <= periodo.ate);
+const curtaData = (data) => `${data.slice(8, 10)}/${data.slice(5, 7)}`;
+function semDias(ano, mes, periodo) {
+  return new ErroPlanilha(periodo
+    ? `Não há dias lançados entre ${curtaData(periodo.de)} e ${curtaData(periodo.ate)} em ${pad(mes)}/${ano}.`
+    : `Não há dias lançados em ${pad(mes)}/${ano}.`);
+}
 
 /** Os modelos da GME e da NGC são reconhecidos pelo nome do arquivo. */
 export const ehGME = (nome) => /gme/i.test(String(nome || ""));
@@ -317,7 +325,7 @@ function criarTextos(xmlInicial) {
 
 /**
  * Gera a planilha oficial.
- * dados = { tipo, ano, mes, centroPadrao, commessaPadrao,
+ * dados = { tipo, ano, mes, centroPadrao, commessaPadrao, periodo (opcional: { de, ate } em AAAA-MM-DD),
  *           registros: [{ data:'AAAA-MM-DD', inicio:'HH:MM', fim:'HH:MM', jantar, almocoSaida, almocoVolta, centro, commessa, obs }] }
  * No tipo "gme", registros deve trazer todos os dias: o fim de um turno do mês anterior pode cair no dia 1.
  * Retorna { arquivo: Uint8Array, dias, totalHoras }.
@@ -327,8 +335,9 @@ export async function gerarPlanilha(JSZip, modelo, dados) {
   if (!modelo) throw new ErroPlanilha("Nenhum modelo de planilha configurado. Escolha um em Ajustes → Modelo da planilha.");
   if (dados.tipo === "gme") return gerarGME(JSZip, modelo, dados);
   if (dados.tipo === "ngc") return gerarNGC(JSZip, modelo, dados);
-  const doMes = registros.filter((r) => r.data.startsWith(`${ano}-${pad(mes)}-`));
-  if (!doMes.length) throw new ErroPlanilha(`Não há dias lançados em ${pad(mes)}/${ano}.`);
+  const noPeriodo = dentroDoPeriodo(dados.periodo);
+  const doMes = registros.filter((r) => r.data.startsWith(`${ano}-${pad(mes)}-`) && noPeriodo(r.data));
+  if (!doMes.length) throw semDias(ano, mes, dados.periodo);
   for (const r of doMes) {
     const dia = r.data.slice(8, 10) + "/" + r.data.slice(5, 7);
     if (!r.inicio) throw new ErroPlanilha(`O dia ${dia} está sem horário de entrada.`);
@@ -479,8 +488,9 @@ function distribuirPeriodos(trechos, data) {
 async function gerarGME(JSZip, modelo, dados) {
   const { ano, mes, registros } = dados;
   const prefixo = `${ano}-${pad(mes)}-`;
-  const doMes = registros.filter((r) => r.data.startsWith(prefixo));
-  if (!doMes.length) throw new ErroPlanilha(`Não há dias lançados em ${pad(mes)}/${ano}.`);
+  const noPeriodo = dentroDoPeriodo(dados.periodo);
+  const doMes = registros.filter((r) => r.data.startsWith(prefixo) && noPeriodo(r.data));
+  if (!doMes.length) throw semDias(ano, mes, dados.periodo);
   for (const r of doMes) {
     if (!r.inicio) throw new ErroPlanilha(`O dia ${diaCurto(r.data)} está sem horário de entrada.`);
     if (!r.fim) throw new ErroPlanilha(`O dia ${diaCurto(r.data)} está sem horário de saída.`);
@@ -499,7 +509,7 @@ async function gerarGME(JSZip, modelo, dados) {
       throw new ErroPlanilha(`O dia ${diaCurto(r.data)} está sem a volta do almoço.`);
     const seguinte = diaSeguinte(r.data);
     const anotar = (data, a, b) => {
-      if (b <= a || !data.startsWith(prefixo)) return;
+      if (b <= a || !data.startsWith(prefixo) || !noPeriodo(data)) return;
       (trechosPorData[data] ||= []).push([a, b]);
       if (data === r.data || !registroPorData[data]) registroPorData[data] = r;
     };
@@ -577,8 +587,9 @@ async function gerarGME(JSZip, modelo, dados) {
 async function gerarNGC(JSZip, modelo, dados) {
   const { ano, mes, registros } = dados;
   const prefixo = `${ano}-${pad(mes)}-`;
-  const doMes = registros.filter((r) => r.data.startsWith(prefixo));
-  if (!doMes.length) throw new ErroPlanilha(`Não há dias lançados em ${pad(mes)}/${ano}.`);
+  const noPeriodo = dentroDoPeriodo(dados.periodo);
+  const doMes = registros.filter((r) => r.data.startsWith(prefixo) && noPeriodo(r.data));
+  if (!doMes.length) throw semDias(ano, mes, dados.periodo);
 
   // Trechos por data: os do próprio ponto ficam no período escolhido; o que passa da meia-noite segue para o dia seguinte.
   const proprios = {}, seguintes = {}, registroPorData = {};
@@ -623,12 +634,13 @@ async function gerarNGC(JSZip, modelo, dados) {
   for (let lin = LINHA_NGC; lin <= ULTIMA_NGC; lin++) {
     const dia = lin - LINHA_NGC + 1;
     const data = `${prefixo}${pad(dia)}`;
-    const existe = dia <= diasNoMes;
+    // Fora do mês ou do período escolhido, a linha fica em branco (sem 00:00).
+    const existe = dia <= diasNoMes && noPeriodo(data);
     const pares = existe ? periodosDaData(data) : [null, null, null];
     let horas = 0;
     COLUNAS_NGC.forEach(([de, ate], i) => {
       const [a, b] = pares[i] || [0, 0];
-      // Dias do mês: período sem horário vira 00:00. Linhas além do fim do mês ficam vazias.
+      // Dias do mês: período sem horário vira 00:00. As demais linhas ficam vazias.
       ws.valor(`${de}${lin}`, existe ? a / MIN_DIA : null);
       ws.valor(`${ate}${lin}`, existe ? b / MIN_DIA : null);
       horas += (b - a) / MIN_DIA;

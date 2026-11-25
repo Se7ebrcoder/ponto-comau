@@ -512,6 +512,7 @@ function telaRegistros() {
       <div><span class="rotulo">Total</span><span class="estat">${reais.format(valor)}</span></div>
     </div>
     ${lista.length ? `<div class="linha"><span class="lbl-forte cresce">Comprovante do mês</span><button class="link" data-acao="comprovante">Gerar imagem</button></div>` : ""}
+    <div class="linha"><span class="lbl-forte cresce">Conferência por período</span><button class="link" data-acao="periodo">Escolher datas</button></div>
     ${lista.length ? `<ul class="lista">${itens}</ul>`
       : `<div class="vazio"><span>Nenhum registro em ${MESES[mes - 1].toLowerCase()}.</span><button class="link encostado" data-aba="registrar">Registrar um dia</button></div>`}`;
 }
@@ -600,6 +601,105 @@ async function gerar() {
   }
 }
 
+// ---------- Gerar por período (conferência) ----------
+// Opcional: a geração normal continua sendo a do mês. Gera só os dias escolhidos (até 31),
+// de um cliente só; se o período cruza meses, sai uma planilha para cada mês.
+const dataBR = (c) => `${c.slice(8, 10)}/${c.slice(5, 7)}/${c.slice(0, 4)}`;
+const listaNomes = (nomes) => (nomes.length > 1 ? `${nomes.slice(0, -1).join(", ")} e ${nomes.at(-1)}` : nomes[0]);
+function mesesEntre(de, ate) {
+  const meses = [];
+  for (let [a, m] = [+de.slice(0, 4), +de.slice(5, 7)]; `${a}-${pad(m)}` <= ate.slice(0, 7); m === 12 ? (a++, m = 1) : m++) meses.push({ ano: a, mes: m });
+  return meses;
+}
+
+function abrirPeriodo() {
+  const { ano, mes } = ui;
+  const inicioMes = `${ano}-${pad(mes)}-01`;
+  const fimMes = `${ano}-${pad(mes)}-${pad(new Date(ano, mes, 0).getDate())}`;
+  const hojeChave = chaveData(new Date());
+  abrirDialogo(`<div class="folha">
+      <h2>Gerar por período</h2>
+      <p class="sub-folha">Para conferência: a planilha sai só com os dias escolhidos (até 31) e os outros ficam em branco. A geração do mês continua igual.</p>
+      <div class="linha"><span class="lbl cresce">De</span><input type="date" id="p-de" class="campo-data" value="${inicioMes}" aria-label="Data inicial"></div>
+      <div class="linha" style="margin-bottom:18px"><span class="lbl cresce">Até</span><input type="date" id="p-ate" class="campo-data" value="${hojeChave >= inicioMes && hojeChave <= fimMes ? hojeChave : fimMes}" aria-label="Data final"></div>
+      <div class="pilha">
+        <button class="primario" data-acao="gerar-periodo">Gerar planilha do período</button>
+        <button class="secundario" data-acao="fechar">Cancelar</button>
+      </div>
+    </div>`);
+}
+
+async function gerarPorPeriodo() {
+  const de = $("#p-de").value, ate = $("#p-ate").value;
+  if (!de || !ate) return mostrarErro("Período incompleto", "Informe a data inicial e a data final.");
+  if (de > ate) return mostrarErro("Período inválido", "A data inicial precisa ser igual ou anterior à data final.");
+  const dias = Math.round((dataDe(ate) - dataDe(de)) / 86400000) + 1;
+  if (dias > 31) return mostrarErro("Período longo demais", `O período tem ${dias} dias. Escolha no máximo 31 dias, como em uma planilha mensal.`);
+  const lista = Object.values(dados.registros).filter((r) => r.data >= de && r.data <= ate).sort((a, b) => a.data.localeCompare(b.data));
+  if (!lista.length) return mostrarErro("Nada para gerar", `Não há pontos entre ${dataBR(de)} e ${dataBR(ate)}.`);
+  // Cada cliente tem uma planilha diferente: um período com pontos de mais de um cliente não é gerado.
+  const clientes = CLIENTES.filter((c) => lista.some((r) => r.cliente === c));
+  if (clientes.length > 1)
+    return mostrarErro("Mais de um cliente no período", `Entre ${dataBR(de)} e ${dataBR(ate)} há pontos da ${listaNomes(clientes.map((c) => NOME_CLIENTE[c]))}. Como cada planilha é diferente, gere cada cliente separadamente: escolha um período que tenha pontos de um cliente só.`);
+  const cliente = clientes[0];
+  const info = modelos[cliente];
+  if (!info) return mostrarErro("Modelo não escolhido", `Os pontos do período são da ${NOME_CLIENTE[cliente]}, mas o modelo da planilha dela ainda não foi escolhido. Escolha em Ajustes → Modelo da planilha.`);
+  if (ui.cliente !== cliente) { ui.cliente = cliente; dados.config.cliente = cliente; salvar({ alterou: false }); }
+
+  const botao = $('[data-acao="gerar-periodo"]');
+  botao.disabled = true;
+  botao.textContent = "Gerando…";
+  try {
+    const periodo = { de, ate };
+    // Na GME e na NGC, o fim do turno da véspera pode cair no primeiro dia do período.
+    const todos = Object.values(dados.registros).filter((x) => x.cliente === cliente);
+    const arquivos = [];
+    let horas = 0, diasLancados = 0;
+    for (const { ano, mes } of mesesEntre(de, ate)) {
+      const prefixo = `${ano}-${pad(mes)}-`;
+      if (!lista.some((r) => r.data.startsWith(prefixo))) continue;
+      const r = await gerarPlanilha(window.JSZip, deBase64(info.base64), {
+        tipo: cliente, ano, mes, periodo, centroPadrao: centroPadrao(), commessaPadrao: dados.config.commessaPadrao,
+        registros: cliente === "comau" ? lista : todos,
+      });
+      horas += r.totalHoras;
+      diasLancados += r.dias;
+      const fimMes = `${prefixo}${pad(new Date(ano, mes, 0).getDate())}`;
+      const ini = de > `${prefixo}01` ? de : `${prefixo}01`, fim = ate < fimMes ? ate : fimMes;
+      const nome = nomeArquivo(ano, mes, info.funcionario, cliente).replace(/(\.\w+)$/, `_conferencia_${ini.slice(8)}a${fim.slice(8)}$1`);
+      arquivos.push(new File([r.arquivo], nome, { type: cliente === "comau" ? MIME_XLSM : MIME_XLSX }));
+    }
+    const valor = lista.filter((x) => x.fim).reduce((s, x) => s + valorDoDia(x), 0);
+    const comprovante = await criarComprovante(null, null, {
+      lista, titulo: `${dataBR(de)} a ${dataBR(ate)}`,
+      nome: `${de.slice(8)}-${de.slice(5, 7)}_a_${ate.slice(8)}-${ate.slice(5, 7)}_${ate.slice(0, 4)}`,
+    });
+    render();
+    const varias = arquivos.length > 1;
+    abrirDialogo(`<div class="folha">
+        <div class="icone-resultado ok"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></div>
+        <h2>${varias ? "Planilhas do período geradas" : "Planilha do período gerada"}</h2>
+        <p class="sub-folha">${NOME_CLIENTE[cliente]} · ${dataBR(de)} a ${dataBR(ate)}<br>${arquivos.map((a) => esc(a.name)).join("<br>")}<br>+ comprovante do período</p>
+        <div class="estatisticas" style="margin-bottom:20px">
+          <div><span class="rotulo">Dias</span><span class="estat">${diasLancados}</span></div>
+          <div><span class="rotulo">Horas</span><span class="estat">${fmtHM(Math.round(horas * 60))}</span></div>
+          <div><span class="rotulo">Total</span><span class="estat">${reais.format(valor)}</span></div>
+        </div>
+        <div class="pilha">
+          <button class="primario" data-acao="compartilhar-ambos">Salvar ${varias ? "planilhas" : "planilha"} + comprovante</button>
+          <button class="secundario" data-acao="compartilhar">${varias ? "Só as planilhas" : "Só a planilha"}</button>
+          <button class="link mudo" style="width:100%;min-height:44px" data-acao="fechar">Fechar</button>
+        </div>
+      </div>`);
+    $('[data-acao="compartilhar-ambos"]').addEventListener("click", () => entregarArquivos([...arquivos, comprovante]));
+    $('[data-acao="compartilhar"]').addEventListener("click", () => entregarArquivos(arquivos));
+  } catch (e) {
+    mostrarErro("Não foi possível gerar a planilha do período", mensagemDe(e));
+  } finally {
+    if (botao.isConnected) { botao.disabled = false; botao.textContent = "Gerar planilha do período"; }
+  }
+}
+
 // Abre o "Compartilhar" do iPhone com os arquivos (Salvar em Arquivos, WhatsApp, e-mail...).
 // Sem suporte a compartilhar (ex.: computador), baixa os arquivos.
 async function entregarArquivos(arquivos) {
@@ -624,8 +724,10 @@ async function baixarArquivos(arquivos) {
 }
 
 // ---------- Comprovante do mês ----------
-async function criarComprovante(ano, mes) {
-  const lista = registrosDoMes(ano, mes);
+// extra (geração por período): { lista, titulo, nome } no lugar do mês.
+async function criarComprovante(ano, mes, extra = {}) {
+  const lista = extra.lista || registrosDoMes(ano, mes);
+  const tituloBase = extra.titulo || `${MESES[mes - 1]} de ${ano}`;
   const completos = lista.filter((r) => r.inicio && r.fim);
   const agora = new Date();
   const funcionario = modelos[ui.cliente]?.funcionario || "";
@@ -634,7 +736,7 @@ async function criarComprovante(ano, mes) {
   const totais = { dias: completos.length, horas: fmtHM(completos.reduce((s, r) => s + minutosTrabalhados(r), 0)) };
   const imagem = modeloNGC() ? await desenharComprovante({
     // NGC: colunas como na planilha (manhã, tarde, noite e total), com o cabeçalho do cliente.
-    layout: "periodos", funcionario, titulo: `${MESES[mes - 1]} de ${ano}`,
+    layout: "periodos", funcionario, titulo: tituloBase,
     subtitulo: ["NGC", modelos.ngc?.clienteFinal, modelos.ngc?.local].filter(Boolean).join(" · "),
     geradoEm, totais,
     linhas: lista.map((r) => {
@@ -647,7 +749,7 @@ async function criarComprovante(ano, mes) {
     }),
   }) : await desenharComprovante({
     funcionario,
-    titulo: `${MESES[mes - 1]} de ${ano}${dois ? ` · ${NOME_CLIENTE[ui.cliente]}` : ""}`,
+    titulo: `${tituloBase}${dois ? ` · ${NOME_CLIENTE[ui.cliente]}` : ""}`,
     coluna: modeloGME() ? "COMMESSA" : "EQUIPE",
     geradoEm, totais,
     linhas: lista.map((r) => {
@@ -661,7 +763,7 @@ async function criarComprovante(ano, mes) {
     }),
   });
   const primeiro = funcionario.trim().split(/\s+/)[0];
-  const partes = ["Comprovante_Horas", primeiro, (dois || modeloNGC()) && NOME_CLIENTE[ui.cliente], pad(mes), ano].filter(Boolean);
+  const partes = ["Comprovante_Horas", primeiro, (dois || modeloNGC()) && NOME_CLIENTE[ui.cliente], ...(extra.nome ? [extra.nome] : [pad(mes), ano])].filter(Boolean);
   return new File([imagem], `${partes.join("_")}.png`, { type: "image/png" });
 }
 
@@ -1070,6 +1172,7 @@ document.addEventListener("click", (e) => {
     editar: () => { form = formDe(dados.registros[chaveRegistro(alvo.dataset.data, ui.cliente)]); navegar("registrar", { manterForm: true }); },
     cliente: () => trocarCliente(alvo.dataset.valor),
     "mes-anterior": () => mudarMes(-1), "mes-seguinte": () => mudarMes(1), gerar, comprovante: gerarSoComprovante,
+    periodo: abrirPeriodo, "gerar-periodo": gerarPorPeriodo,
     "alternar-tema": () => escolherTema(temaEfetivo() === "dark" ? "light" : "dark"),
     tema: () => escolherTema(alvo.dataset.valor),
     "pausa-padrao": () => { dados.config.jantarPadrao = !dados.config.jantarPadrao; if (salvar()) render(); },
