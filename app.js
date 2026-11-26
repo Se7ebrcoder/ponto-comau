@@ -1120,10 +1120,12 @@ async function restaurarBackup() {
 function abrirDialogo(html) {
   const d = $("#dialogo");
   d.innerHTML = html;
-  if (!d.open) d.showModal();
-  // Foca o título, e não o primeiro campo, para o iPhone não abrir teclado/seletor sozinho.
+  // Foca o título, e não o primeiro campo, para o iPhone não abrir teclado/calendário sozinho.
+  // O autofocus vale já na abertura: sem ele, o showModal foca o primeiro campo antes de nós.
   const titulo = d.querySelector("h2");
-  if (titulo) { titulo.tabIndex = -1; titulo.focus({ preventScroll: true }); }
+  if (titulo) { titulo.tabIndex = -1; titulo.autofocus = true; }
+  if (!d.open) d.showModal();
+  if (titulo) titulo.focus({ preventScroll: true });
 }
 function fecharDialogo() { $("#dialogo").close(); }
 
