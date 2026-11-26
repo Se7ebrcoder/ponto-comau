@@ -45,16 +45,23 @@ function completarHora(el) {
 // ---------- Cálculos ----------
 // Enquanto o almoço está sendo digitado, só vale quando os dois horários estão completos.
 const pausaDe = (r) => pausaMinutos(horaOk(r.almocoSaida) && horaOk(r.almocoVolta) ? r : { jantar: r.jantar });
-// NGC: o ponto é dividido em manhã, tarde e noite (De/Até). Horário incompleto conta como vazio.
+// NGC: o ponto é dividido em manhã, tarde e noite (De/Até). Nenhum campo é obrigatório:
+// o que fica vazio vira 00:00 na planilha e não conta; só o período com De e Até soma horas.
+// 00:00 digitado é meia-noite e conta. Horário incompleto (digitando) conta como vazio.
 const periodosVazios = () => [["", ""], ["", ""], ["", ""]];
-const trechosValidos = (periodos) => trechosDosPeriodos(periodos.map(([de, ate]) => [horaOk(de) ? de : "", horaOk(de) && horaOk(ate) ? ate : ""]));
+const completo = ([de, ate]) => horaOk(de) && horaOk(ate);
+const trechosValidos = (periodos) => trechosDosPeriodos(periodos.map((p) => (completo(p) ? p : ["", ""])));
+// Início e fim do ponto da NGC (lista e sobreposição): do primeiro De ao último Até dos períodos completos.
+// Sem período completo, o primeiro horário preenchido. Na NGC o ponto nunca fica "sem fim".
 function resumoPeriodos(periodos) {
-  const cheios = periodos.filter(([de]) => de);
-  return { inicio: cheios[0]?.[0] || "", fim: cheios.length && cheios.every(([, ate]) => ate) ? cheios.at(-1)[1] : "" };
+  const cheios = periodos.filter(completo);
+  if (cheios.length) return { inicio: cheios[0][0], fim: cheios.at(-1)[1] };
+  const algum = periodos.flat().find(horaOk) || "";
+  return { inicio: algum, fim: algum };
 }
-const textoPeriodos = (r) => (r.periodos || []).filter(([de]) => de).map(([de, ate]) => `${de}–${ate || "…"}`).join(" · ");
+const textoPeriodos = (r) => (r.periodos || []).filter(([de, ate]) => de || ate).map(([de, ate]) => `${de || "--:--"}–${ate || "--:--"}`).join(" · ");
 function minutosTrabalhados(r) {
-  if (r.periodos) return trechosValidos(r.periodos).reduce((s, { a, b }) => s + (b !== null && b > a ? b - a : 0), 0);
+  if (r.periodos) return trechosValidos(r.periodos).reduce((s, { a, b }) => s + (b > a ? b - a : 0), 0);
   if (!horaOk(r.inicio) || !horaOk(r.fim)) return 0;
   let min = minutosDe(r.fim) - minutosDe(r.inicio);
   if (min < 0) min += 1440;
@@ -97,7 +104,8 @@ function normalizarRegistros(registros) {
   const saida = {};
   for (const r of Object.values(registros)) {
     const cliente = r.cliente || (r.periodos ? "ngc" : r.almocoSaida || r.commessa ? "gme" : "comau");
-    saida[chaveRegistro(r.data, cliente)] = { ...r, cliente };
+    // NGC: pontos salvos antes sem o Até deixam de ficar "sem fim".
+    saida[chaveRegistro(r.data, cliente)] = { ...r, cliente, ...(r.periodos ? resumoPeriodos(r.periodos) : {}) };
   }
   return saida;
 }
@@ -397,24 +405,21 @@ function validarTurno(v) {
   return validarAlmoco(v);
 }
 
-// NGC: cada período com De e Até, em ordem ao longo do dia. Só o último período pode ficar sem o Até (ponto em aberto).
+// NGC: nenhum campo é obrigatório (o vazio vira 00:00 e não conta). Basta um horário preenchido;
+// os períodos completos (De e Até) precisam seguir em ordem ao longo do dia.
 function validarPeriodos(periodos) {
   const nome = (i) => PERIODOS_NGC[i].toLowerCase();
   for (let i = 0; i < 3; i++) {
     const [de, ate] = periodos[i];
     if (de && !horaOk(de)) return `Horário "De" da ${nome(i)} inválido ("${de}"). Digite no formato hh:mm, ex.: 08:00.`;
     if (ate && !horaOk(ate)) return `Horário "Até" da ${nome(i)} inválido ("${ate}"). Digite no formato hh:mm, ex.: 12:00.`;
-    if (ate && !de) return `Informe o horário "De" da ${nome(i)}.`;
   }
-  const cheios = [0, 1, 2].filter((i) => periodos[i][0]);
-  if (!cheios.length) return "Informe o horário de início (De) de pelo menos um período: manhã, tarde ou noite.";
-  const aberto = cheios.find((i) => !periodos[i][1]);
-  if (aberto !== undefined && aberto !== cheios.at(-1)) return `Informe o horário "Até" da ${nome(aberto)}.`;
+  if (!periodos.flat().some(Boolean)) return "Preencha pelo menos um horário: manhã, tarde ou noite.";
   let anterior = null;
   for (const { i, a, b } of trechosDosPeriodos(periodos)) {
     if (anterior !== null && a < anterior) return `A ${nome(i)} precisa começar depois do fim do período anterior.`;
-    if (b !== null && b <= a) return `Na ${nome(i)}, o "Até" precisa ser depois do "De".`;
-    anterior = b ?? a;
+    if (b <= a) return `Na ${nome(i)}, o "Até" precisa ser depois do "De".`;
+    anterior = b;
   }
   return "";
 }
@@ -743,8 +748,9 @@ async function criarComprovante(ano, mes, extra = {}) {
       const d = dataDe(r.data);
       return {
         dia: pad(d.getDate()), semana: SEMANA[d.getDay()], mais1: viraDia(r),
-        periodos: [0, 1, 2].map((i) => { const [de, ate] = r.periodos?.[i] || ["", ""]; return de ? `${de}–${ate || "…"}` : "—"; }),
-        horas: fmtHM(minutosTrabalhados(r)), obs: r.obs || "", semFim: !r.fim,
+        // Como na planilha: só o período com De e Até aparece; o incompleto não conta e fica "—".
+        periodos: [0, 1, 2].map((i) => { const p = r.periodos?.[i] || ["", ""]; return completo(p) ? `${p[0]}–${p[1]}` : "—"; }),
+        horas: fmtHM(minutosTrabalhados(r)), obs: r.obs || "", semFim: false,
       };
     }),
   }) : await desenharComprovante({

@@ -49,14 +49,15 @@ export const ehNGC = (nome) => /ngc/i.test(String(nome || ""));
 /**
  * Trechos de um ponto da NGC (manhã, tarde e noite), em minutos desde as 00:00 da data do ponto.
  * Tudo é contado a partir do primeiro horário: o que vem antes dele já é do dia seguinte (passa de 1440).
- * Retorna [{ i, a, b }], com b = null se o período ainda não tem o horário de saída.
+ * Só contam os períodos com De e Até: campo vazio vira 00:00 na planilha e é ignorado (00:00 digitado é meia-noite).
+ * Retorna [{ i, a, b }].
  */
 export function trechosDosPeriodos(periodos) {
-  const cheios = (periodos || []).map(([de, ate], i) => ({ i, de, ate })).filter((p) => p.de);
+  const cheios = (periodos || []).map(([de, ate], i) => ({ i, de, ate })).filter((p) => p.de && p.ate);
   if (!cheios.length) return [];
   const ini = minutosDe(cheios[0].de);
   const abs = (h) => ini + ((minutosDe(h) - ini + MIN_DIA) % MIN_DIA);
-  return cheios.map(({ i, de, ate }) => ({ i, a: abs(de), b: ate ? abs(ate) : null }));
+  return cheios.map(({ i, de, ate }) => ({ i, a: abs(de), b: abs(ate) }));
 }
 
 /** Minutos de pausa de um lançamento: o almoço informado ou a pausa fixa de 60 min. */
@@ -582,7 +583,8 @@ async function gerarGME(JSZip, modelo, dados) {
 // ---------- planilha NGC ----------
 /**
  * Na NGC, cada ponto já vem dividido em manhã, tarde e noite, e cada um vai para a sua coluna.
- * O que passa da meia-noite vai para a linha do dia seguinte. Horário vazio é gravado como 00:00.
+ * O que passa da meia-noite vai para a linha do dia seguinte. Horário vazio é gravado como 00:00;
+ * período sem De ou sem Até não conta e fica 00:00 nos dois campos.
  */
 async function gerarNGC(JSZip, modelo, dados) {
   const { ano, mes, registros } = dados;
@@ -598,9 +600,7 @@ async function gerarNGC(JSZip, modelo, dados) {
     if (!trechos.length) continue;
     const seguinte = diaSeguinte(r.data);
     const doMesAtual = r.data.startsWith(prefixo);
-    if (!doMesAtual && !(seguinte.startsWith(prefixo) && trechos.some((t) => (t.b ?? 0) > MIN_DIA))) continue;
-    const aberto = trechos.find((t) => t.b === null);
-    if (aberto) throw new ErroPlanilha(`O dia ${diaCurto(r.data)} está sem o horário de saída (Até) da ${PERIODOS_NGC[aberto.i].toLowerCase()}.`);
+    if (!doMesAtual && !(seguinte.startsWith(prefixo) && trechos.some((t) => t.b > MIN_DIA))) continue;
     if (doMesAtual) registroPorData[r.data] = r;
     for (const { i, a, b } of trechos) {
       if (a < MIN_DIA && doMesAtual) (proprios[r.data] ||= []).push({ i, a, b: Math.min(b, MIN_DIA) });
