@@ -1,4 +1,4 @@
-import { ErroPlanilha, PERIODOS_NGC, ehGME, ehNGC, gerarPlanilha, lerModelo, minutosDe, nomeArquivo, pausaMinutos, trechosDosPeriodos } from "./xlsm.js";
+import { ErroPlanilha, PERIODOS_NGC, ehGME, ehNGC, gerarPlanilha, lerModelo, minutosDe, nomeArquivo, pausaMinutos, trechosDosPeriodos, batidasNGC } from "./xlsm.js";
 import { desenharComprovante } from "./comprovante.js";
 
 const CHAVE = "ponto-comau.v1";
@@ -45,21 +45,27 @@ function completarHora(el) {
 // ---------- Cálculos ----------
 // Enquanto o almoço está sendo digitado, só vale quando os dois horários estão completos.
 const pausaDe = (r) => pausaMinutos(horaOk(r.almocoSaida) && horaOk(r.almocoVolta) ? r : { jantar: r.jantar });
-// NGC: o ponto é dividido em manhã, tarde e noite (De/Até). Nenhum campo é obrigatório:
-// o que fica vazio vira 00:00 na planilha e não conta; só o período com De e Até soma horas.
-// 00:00 digitado é meia-noite e conta. Horário incompleto (digitando) conta como vazio.
+// NGC: os seis campos (De/Até de manhã, tarde e noite) são batidas em ordem, pulando as vazias,
+// que formam pares entrada/saída: De 08:00 na manhã, 11:00–12:00 na tarde e Até 20:00 na noite
+// = 08:00–11:00 e 12:00–20:00 (almoço de 11 a 12). Nenhum campo é obrigatório; o vazio vira 00:00
+// na planilha e não conta. 00:00 digitado é meia-noite. Horário incompleto (digitando) conta como vazio.
 const periodosVazios = () => [["", ""], ["", ""], ["", ""]];
-const completo = ([de, ate]) => horaOk(de) && horaOk(ate);
-const trechosValidos = (periodos) => trechosDosPeriodos(periodos.map((p) => (completo(p) ? p : ["", ""])));
-// Início e fim do ponto da NGC (lista e sobreposição): do primeiro De ao último Até dos períodos completos.
-// Sem período completo, o primeiro horário preenchido. Na NGC o ponto nunca fica "sem fim".
-function resumoPeriodos(periodos) {
-  const cheios = periodos.filter(completo);
-  if (cheios.length) return { inicio: cheios[0][0], fim: cheios.at(-1)[1] };
-  const algum = periodos.flat().find(horaOk) || "";
-  return { inicio: algum, fim: algum };
+const soValidos = (periodos) => periodos.map((p) => p.map((h) => (horaOk(h) ? h : "")));
+const trechosValidos = (periodos) => trechosDosPeriodos(soValidos(periodos));
+// Pares entrada/saída em texto ("08:00–11:00"), mais a batida sem par, se houver.
+function paresNGC(periodos) {
+  const b = batidasNGC(soValidos(periodos)), pares = [];
+  for (let k = 0; k < b.length; k += 2) pares.push({ de: b[k].h, ate: b[k + 1]?.h || "" });
+  return pares;
 }
-const textoPeriodos = (r) => (r.periodos || []).filter(([de, ate]) => de || ate).map(([de, ate]) => `${de || "--:--"}–${ate || "--:--"}`).join(" · ");
+// Início e fim do ponto da NGC (lista e sobreposição): da primeira batida à última saída.
+// Sem nenhum par, a única batida. Na NGC o ponto nunca fica "sem fim".
+function resumoPeriodos(periodos) {
+  const pares = paresNGC(periodos), completos = pares.filter((p) => p.ate);
+  const inicio = pares[0]?.de || "";
+  return { inicio, fim: completos.at(-1)?.ate || inicio };
+}
+const textoPeriodos = (r) => paresNGC(r.periodos || []).map(({ de, ate }) => `${de}–${ate || "--:--"}`).join(" · ");
 function minutosTrabalhados(r) {
   if (r.periodos) return trechosValidos(r.periodos).reduce((s, { a, b }) => s + (b > a ? b - a : 0), 0);
   if (!horaOk(r.inicio) || !horaOk(r.fim)) return 0;
@@ -406,20 +412,20 @@ function validarTurno(v) {
 }
 
 // NGC: nenhum campo é obrigatório (o vazio vira 00:00 e não conta). Basta um horário preenchido;
-// os períodos completos (De e Até) precisam seguir em ordem ao longo do dia.
+// as batidas precisam seguir em ordem ao longo do turno (pode passar da meia-noite, até 24 h).
 function validarPeriodos(periodos) {
-  const nome = (i) => PERIODOS_NGC[i].toLowerCase();
+  const campo = (i) => `"${i % 2 ? "Até" : "De"}" da ${PERIODOS_NGC[i >> 1].toLowerCase()}`;
   for (let i = 0; i < 3; i++) {
     const [de, ate] = periodos[i];
-    if (de && !horaOk(de)) return `Horário "De" da ${nome(i)} inválido ("${de}"). Digite no formato hh:mm, ex.: 08:00.`;
-    if (ate && !horaOk(ate)) return `Horário "Até" da ${nome(i)} inválido ("${ate}"). Digite no formato hh:mm, ex.: 12:00.`;
+    if (de && !horaOk(de)) return `Horário ${campo(2 * i)} inválido ("${de}"). Digite no formato hh:mm, ex.: 08:00.`;
+    if (ate && !horaOk(ate)) return `Horário ${campo(2 * i + 1)} inválido ("${ate}"). Digite no formato hh:mm, ex.: 12:00.`;
   }
-  if (!periodos.flat().some(Boolean)) return "Preencha pelo menos um horário: manhã, tarde ou noite.";
-  let anterior = null;
-  for (const { i, a, b } of trechosDosPeriodos(periodos)) {
-    if (anterior !== null && a < anterior) return `A ${nome(i)} precisa começar depois do fim do período anterior.`;
-    if (b <= a) return `Na ${nome(i)}, o "Até" precisa ser depois do "De".`;
-    anterior = b;
+  const b = batidasNGC(periodos);
+  if (!b.length) return "Preencha pelo menos um horário.";
+  for (let k = 1; k < b.length; k++) {
+    // Saída igual à entrada não vale; entre uma saída e a próxima entrada, pode (intervalo zero).
+    if (b[k].m < b[k - 1].m || (k % 2 === 1 && b[k].m === b[k - 1].m))
+      return `Os horários precisam seguir em ordem: o ${campo(b[k].campo)} (${b[k].h}) está antes ou igual ao ${campo(b[k - 1].campo)} (${b[k - 1].h}).`;
   }
   return "";
 }
@@ -748,8 +754,8 @@ async function criarComprovante(ano, mes, extra = {}) {
       const d = dataDe(r.data);
       return {
         dia: pad(d.getDate()), semana: SEMANA[d.getDay()], mais1: viraDia(r),
-        // Como na planilha: só o período com De e Até aparece; o incompleto não conta e fica "—".
-        periodos: [0, 1, 2].map((i) => { const p = r.periodos?.[i] || ["", ""]; return completo(p) ? `${p[0]}–${p[1]}` : "—"; }),
+        // Como na planilha: os pares entrada/saída em sequência; batida sem par não conta e não aparece.
+        periodos: (() => { const p = paresNGC(r.periodos || []).filter((x) => x.ate); return [0, 1, 2].map((i) => (p[i] ? `${p[i].de}–${p[i].ate}` : "—")); })(),
         horas: fmtHM(minutosTrabalhados(r)), obs: r.obs || "", semFim: false,
       };
     }),

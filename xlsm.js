@@ -47,17 +47,29 @@ export const ehGME = (nome) => /gme/i.test(String(nome || ""));
 export const ehNGC = (nome) => /ngc/i.test(String(nome || ""));
 
 /**
- * Trechos de um ponto da NGC (manhã, tarde e noite), em minutos desde as 00:00 da data do ponto.
- * Tudo é contado a partir do primeiro horário: o que vem antes dele já é do dia seguinte (passa de 1440).
- * Só contam os períodos com De e Até: campo vazio vira 00:00 na planilha e é ignorado (00:00 digitado é meia-noite).
- * Retorna [{ i, a, b }].
+ * Batidas de um ponto da NGC: os seis campos (De/Até de manhã, tarde e noite) lidos em ordem,
+ * pulando os vazios. Manhã, tarde e noite não importam: valem os horários preenchidos.
+ * Em minutos desde as 00:00 da data do ponto, contados a partir da primeira batida
+ * (o que vem antes dela já é do dia seguinte e passa de 1440). 00:00 digitado é meia-noite.
+ * Retorna [{ campo, h, m }], com campo de 0 a 5 (posição na tela).
+ */
+export function batidasNGC(periodos) {
+  const cheias = (periodos || []).flat().map((h, campo) => ({ campo, h })).filter((x) => x.h);
+  if (!cheias.length) return [];
+  const ini = minutosDe(cheias[0].h);
+  return cheias.map(({ campo, h }) => ({ campo, h, m: ini + ((minutosDe(h) - ini + MIN_DIA) % MIN_DIA) }));
+}
+
+/**
+ * Trechos trabalhados de um ponto da NGC: as batidas formam pares entrada/saída, em ordem.
+ * Ex.: De 08:00 na manhã, 11:00–12:00 na tarde e Até 20:00 na noite = 08:00–11:00 e 12:00–20:00 (11 h).
+ * Uma batida sem par (a última, quando o total é ímpar) não conta.
+ * Retorna [{ i, a, b }], com i = número do par (0, 1, 2), que é a coluna da planilha.
  */
 export function trechosDosPeriodos(periodos) {
-  const cheios = (periodos || []).map(([de, ate], i) => ({ i, de, ate })).filter((p) => p.de && p.ate);
-  if (!cheios.length) return [];
-  const ini = minutosDe(cheios[0].de);
-  const abs = (h) => ini + ((minutosDe(h) - ini + MIN_DIA) % MIN_DIA);
-  return cheios.map(({ i, de, ate }) => ({ i, a: abs(de), b: abs(ate) }));
+  const b = batidasNGC(periodos), pares = [];
+  for (let k = 0; k + 1 < b.length; k += 2) pares.push({ i: k / 2, a: b[k].m, b: b[k + 1].m });
+  return pares;
 }
 
 /** Minutos de pausa de um lançamento: o almoço informado ou a pausa fixa de 60 min. */
@@ -582,9 +594,9 @@ async function gerarGME(JSZip, modelo, dados) {
 
 // ---------- planilha NGC ----------
 /**
- * Na NGC, cada ponto já vem dividido em manhã, tarde e noite, e cada um vai para a sua coluna.
- * O que passa da meia-noite vai para a linha do dia seguinte. Horário vazio é gravado como 00:00;
- * período sem De ou sem Até não conta e fica 00:00 nos dois campos.
+ * Na NGC, as batidas do ponto formam pares entrada/saída (trechosDosPeriodos), gravados em sequência
+ * nas colunas da planilha (1º par em C/D, 2º em E/F, 3º em G/H), para a fórmula do dia somar certo.
+ * O que passa da meia-noite vai para a linha do dia seguinte. O que sobra fica 00:00 e não conta.
  */
 async function gerarNGC(JSZip, modelo, dados) {
   const { ano, mes, registros } = dados;
