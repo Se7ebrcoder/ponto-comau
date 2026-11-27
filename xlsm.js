@@ -338,7 +338,7 @@ function criarTextos(xmlInicial) {
 
 /**
  * Gera a planilha oficial.
- * dados = { tipo, ano, mes, centroPadrao, commessaPadrao, periodo (opcional: { de, ate } em AAAA-MM-DD),
+ * dados = { tipo, ano, mes, centroPadrao, commessaPadrao, commessasExtras (GME: [{ codigo, linha }] adicionadas no app), periodo (opcional: { de, ate } em AAAA-MM-DD),
  *           registros: [{ data:'AAAA-MM-DD', inicio:'HH:MM', fim:'HH:MM', jantar, almocoSaida, almocoVolta, centro, commessa, obs }] }
  * No tipo "gme", registros deve trazer todos os dias: o fim de um turno do mês anterior pode cair no dia 1.
  * Retorna { arquivo: Uint8Array, dias, totalHoras }.
@@ -391,6 +391,18 @@ export async function gerarPlanilha(JSZip, modelo, dados) {
     ws.calculado(`K${lin}`, K[lin]);
     C[lin] = c;
     I[lin] = centro;
+  }
+
+  // Centro de custo adicionado no app: entra num espaço livre da "Legenda de projetos" (B47:B63),
+  // que é a lista de opções da coluna I no Excel. Sem espaço livre, fica só no dia.
+  const legenda = [];
+  for (let lin = 47; lin <= 63; lin++) legenda.push({ lin, v: String(ws.atual(`B${lin}`, sst) ?? "").trim() });
+  for (const centro of new Set(Object.values(I).filter(Boolean))) {
+    if (legenda.some((l) => l.v === centro.trim())) continue;
+    const livre = legenda.find((l) => l.v === "" || l.v === "--");
+    if (!livre) break;
+    ws.valor(`B${livre.lin}`, indiceTexto(centro), { compartilhado: true });
+    livre.v = centro.trim();
   }
 
   // Totais
@@ -572,6 +584,23 @@ async function gerarGME(JSZip, modelo, dados) {
     ws.calculado(`M${lin}`, a === "" ? "#VALUE!" : new Date(BASE_SERIAL + a * 86400000).getUTCDay() || 7);
     H[lin] = ((v.G - v.F) + (v.E - v.D) + (v.C - v.B)) * 24;
     ws.calculado(`H${lin}`, H[lin]);
+  }
+
+  // Commessa adicionada no app: entra numa linha livre da tabela COMESSAS (R/S), com a descrição.
+  const tabela = [];
+  for (let lin = 17; lin <= 60; lin++) {
+    if (!new RegExp(`<row r="${lin}"[ >]`).test(ws.xml)) break;
+    tabela.push({ lin, v: String(ws.atual(`R${lin}`, textos.lista) ?? "").trim() });
+  }
+  const usadas = new Set(Object.values(registroPorData).map((r) => String(r.commessa ?? dados.commessaPadrao ?? "").trim()).filter(Boolean));
+  for (const codigo of usadas) {
+    const extra = (dados.commessasExtras || []).find((c) => c.codigo === codigo);
+    if (!extra || tabela.some((t) => t.v === codigo)) continue;
+    const livre = tabela.find((t) => t.v === "");
+    if (!livre) break;
+    ws.valor(`R${livre.lin}`, /^\d+$/.test(codigo) ? Number(codigo) : textos.indice(codigo), { compartilhado: !/^\d+$/.test(codigo) });
+    if (extra.linha) ws.valor(`S${livre.lin}`, textos.indice(extra.linha), { compartilhado: true });
+    livre.v = codigo;
   }
 
   // Totais: geral, canteiro e sede

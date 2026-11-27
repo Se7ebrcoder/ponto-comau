@@ -86,7 +86,7 @@ const ehAndroid = /Android/i.test(navigator.userAgent);
 const temPastaNoAparelho = ehAndroid && !!window.showDirectoryPicker;
 
 // ---------- Armazenamento (só neste aparelho) ----------
-const PADRAO = { registros: {}, config: { centroPadrao: null, jantarPadrao: true, commessaPadrao: "", ultimoBackup: null, lembreteBackup: null, alteradoEm: null, pastaBackup: null, pastaFalhou: false } };
+const PADRAO = { registros: {}, config: { centroPadrao: null, jantarPadrao: true, commessaPadrao: "", centrosExtras: [], commessasExtras: [], ultimoBackup: null, lembreteBackup: null, alteradoEm: null, pastaBackup: null, pastaFalhou: false } };
 let dados = carregar();
 let modelos = carregarModelos(); // { comau, gme, ngc }: cada um { arquivo, importadoEm, funcionario, centros, base64 } ou null
 
@@ -142,17 +142,20 @@ function clienteInicial() {
 const modeloGME = () => ui.cliente === "gme";
 const modeloNGC = () => ui.cliente === "ngc";
 
-// Opções do ponto, lidas da legenda de cada modelo.
+// Opções do ponto: as da legenda de cada modelo mais as adicionadas à mão no app (Ajustes ou no próprio campo).
+const NOVO_ITEM = "__novo__";
 const centroPadrao = () => dados.config.centroPadrao || modelos.comau?.centros?.[0] || "";
-const listaCommessas = () => modelos.gme?.commessas || [];
+const listaCentros = () => [...(modelos.comau?.centros || []), ...(dados.config.centrosExtras || [])];
+const listaCommessas = () => [...(modelos.gme?.commessas || []), ...(dados.config.commessasExtras || [])];
 function rotuloCommessa(codigo) {
   const item = listaCommessas().find((c) => c.codigo === String(codigo));
   return item?.linha ? `${item.codigo} – ${item.linha}` : String(codigo);
 }
 const opcaoHtml = (valor, rotulo, atual) => `<option value="${esc(valor)}" ${valor === atual ? "selected" : ""}>${esc(rotulo)}</option>`;
 function campoCentro(id, atual, rotulo) {
-  const lista = [...new Set([...(modelos.comau?.centros || []), atual].filter(Boolean))];
-  return `<select id="${id}" class="opcao" aria-label="${rotulo}">${lista.map((c) => opcaoHtml(c, c.trim(), atual)).join("")}</select>`;
+  const lista = [...new Set([...listaCentros(), atual].filter(Boolean))];
+  return `<select id="${id}" class="opcao" data-atual="${esc(atual || "")}" aria-label="${rotulo}">${lista.map((c) => opcaoHtml(c, c.trim(), atual)).join("")}
+      ${opcaoHtml(NOVO_ITEM, "+ Adicionar centro de custo…", "")}</select>`;
 }
 function campoCommessa(id, atual, rotulo) {
   const lista = listaCommessas();
@@ -160,10 +163,11 @@ function campoCommessa(id, atual, rotulo) {
   if (!lista.length) return `<input id="${id}" class="numero" inputmode="numeric" maxlength="12" value="${esc(atual)}" placeholder="—" aria-label="${rotulo}">`;
   const valor = String(atual ?? "");
   const conhecida = !valor || lista.some((c) => c.codigo === valor);
-  return `<select id="${id}" class="opcao" aria-label="${rotulo}">
+  return `<select id="${id}" class="opcao" data-atual="${esc(valor)}" aria-label="${rotulo}">
       ${opcaoHtml("", "Sem commessa", valor)}
       ${lista.map((c) => opcaoHtml(c.codigo, rotuloCommessa(c.codigo), valor)).join("")}
       ${conhecida ? "" : opcaoHtml(valor, valor, valor)}
+      ${opcaoHtml(NOVO_ITEM, "+ Adicionar commessa…", "")}
     </select>`;
 }
 
@@ -563,7 +567,7 @@ async function gerar() {
     const tipo = ui.cliente;
     const doMes = registrosDoMes(ano, mes);
     const r = await gerarPlanilha(window.JSZip, deBase64(info.base64), {
-      tipo, ano, mes, centroPadrao: centroPadrao(), commessaPadrao: dados.config.commessaPadrao,
+      tipo, ano, mes, centroPadrao: centroPadrao(), commessaPadrao: dados.config.commessaPadrao, commessasExtras: dados.config.commessasExtras,
       // Na GME e na NGC, o fim de um turno do mês anterior pode cair no dia 1, por isso vão todos os registros do cliente.
       registros: tipo === "comau" ? doMes : Object.values(dados.registros).filter((x) => x.cliente === tipo),
     });
@@ -652,7 +656,7 @@ async function gerarPorPeriodo() {
       const prefixo = `${ano}-${pad(mes)}-`;
       if (!lista.some((r) => r.data.startsWith(prefixo))) continue;
       const r = await gerarPlanilha(window.JSZip, deBase64(info.base64), {
-        tipo: cliente, ano, mes, periodo, centroPadrao: centroPadrao(), commessaPadrao: dados.config.commessaPadrao,
+        tipo: cliente, ano, mes, periodo, centroPadrao: centroPadrao(), commessaPadrao: dados.config.commessaPadrao, commessasExtras: dados.config.commessasExtras,
         registros: cliente === "comau" ? lista : todos,
       });
       horas += r.totalHoras;
@@ -846,6 +850,7 @@ function telaAjustes() {
       <span class="cresce"></span>
       <button class="link" data-acao="salvar-ajustes">Salvar</button>
     </div>` : ""}
+    ${secaoLista()}
 
     <h2 class="secao">Modelo da planilha</h2>
     ${linhaModelo("comau")}
@@ -881,6 +886,88 @@ function telaAjustes() {
     </div>
     <p class="dica" style="margin:10px 0 0">${dicaBackup()} Ele contém seus dados e modelos: guarde em local privado.</p>
     <p class="estado" style="text-align:center;margin-top:28px">Ponto Automisa · ${Object.keys(dados.registros).length} dias registrados</p>`;
+}
+
+// ---------- Centros de custo (COMAU) e commessas (GME) adicionados à mão ----------
+// Ficam nos ajustes (e no backup), valem para todos os meses e entram na legenda da planilha gerada.
+function secaoLista() {
+  const centro = !modeloGME() && !modeloNGC() && modelos.comau;
+  if (!centro && !modeloGME()) return "";
+  const tipo = centro ? "centro" : "commessa";
+  const extras = centro ? dados.config.centrosExtras || [] : dados.config.commessasExtras || [];
+  const doModelo = centro ? modelos.comau.centros.length : modelos.gme?.commessas?.length || 0;
+  const linhas = extras.map((item) => {
+    const valor = centro ? item : item.codigo;
+    const rotulo = centro ? item : rotuloCommessa(item.codigo);
+    return `<div class="linha"><span class="lbl cresce">${esc(rotulo)}</span>
+      <button class="link perigo" data-acao="remover-item" data-tipo="${tipo}" data-valor="${esc(valor)}">Remover</button></div>`;
+  }).join("");
+  return `<h2 class="secao">${centro ? "Centros de custo" : "Commessas"}</h2>
+    ${linhas}
+    <div class="linha alta">
+      <div class="cresce pilha-v">
+        <span class="lbl-forte">Adicionar ${centro ? "centro de custo" : "commessa"}</span>
+        <span class="dica">${doModelo} do modelo${extras.length ? ` · ${extras.length} adicionad${centro ? "o" : "a"}${extras.length > 1 ? "s" : ""} aqui` : ""}</span>
+      </div>
+      <button class="link" data-acao="novo-item" data-tipo="${tipo}">Adicionar</button>
+    </div>`;
+}
+
+// destino: id do campo de seleção que pediu o item novo (ele passa a mostrar o item criado).
+function abrirNovoItem(tipo, destino = "") {
+  const centro = tipo === "centro";
+  abrirDialogo(`<div class="folha">
+      <h2>${centro ? "Novo centro de custo" : "Nova commessa"}</h2>
+      <p class="sub-folha">Fica salvo neste aparelho e aparece na lista ${centro ? "da COMAU" : "da GME"}. Na planilha gerada, entra também na ${centro ? "legenda de projetos" : "tabela de commessas"}.</p>
+      ${centro
+        ? `<input id="n-nome" class="campo-texto" maxlength="40" autocomplete="off" placeholder="Ex.: PROJETO 300" aria-label="Nome do centro de custo">`
+        : `<input id="n-codigo" class="campo-texto" maxlength="12" inputmode="numeric" autocomplete="off" placeholder="Número da commessa (ex.: 450)" aria-label="Número da commessa">
+           <input id="n-linha" class="campo-texto" maxlength="20" autocomplete="off" placeholder="Linha (opcional, ex.: PAN)" aria-label="Linha da commessa">`}
+      <div class="pilha" style="margin-top:18px">
+        <button class="primario" data-acao="salvar-item" data-tipo="${tipo}" data-destino="${esc(destino)}">Adicionar</button>
+        <button class="secundario" data-acao="fechar">Cancelar</button>
+      </div>
+    </div>`);
+}
+
+function salvarItem(tipo, destino) {
+  const c = dados.config;
+  let novo;
+  if (tipo === "centro") {
+    novo = $("#n-nome").value.trim().replace(/\s+/g, " ").toUpperCase();
+    if (!novo) return mostrarErro("Centro de custo vazio", "Digite o nome do centro de custo.");
+    if (listaCentros().some((x) => x.trim().toUpperCase() === novo)) return mostrarErro("Centro de custo repetido", `"${novo}" já está na lista.`);
+    c.centrosExtras = [...(c.centrosExtras || []), novo];
+  } else {
+    novo = $("#n-codigo").value.trim().toUpperCase();
+    const linha = $("#n-linha").value.trim().toUpperCase();
+    if (!novo) return mostrarErro("Commessa vazia", "Digite o número da commessa.");
+    if (listaCommessas().some((x) => x.codigo === novo)) return mostrarErro("Commessa repetida", `A commessa ${novo} já está na lista.`);
+    c.commessasExtras = [...(c.commessasExtras || []), { codigo: novo, linha }];
+  }
+  if (!salvar()) return;
+  fecharDialogo();
+  avisar(tipo === "centro" ? "Centro de custo adicionado" : "Commessa adicionada");
+  // Já deixa o item novo escolhido no campo que pediu (o resto do que foi digitado continua).
+  if (destino.startsWith("f-") && ui.aba === "registrar") {
+    lerFormulario();
+    form[tipo === "centro" ? "centro" : "commessa"] = novo;
+    form.alterado = true;
+    render();
+  } else {
+    render();
+    const campo = destino && $(`#${destino}`);
+    if (campo) { campo.value = novo; campo.dataset.atual = novo; }
+  }
+}
+
+function removerItem(tipo, valor) {
+  const c = dados.config;
+  const rotulo = tipo === "centro" ? `o centro de custo "${valor}"` : `a commessa ${rotuloCommessa(valor)}`;
+  if (!confirm(`Remover ${rotulo} da lista? Os pontos que já usam continuam com ele.`)) return;
+  if (tipo === "centro") c.centrosExtras = (c.centrosExtras || []).filter((x) => x !== valor);
+  else c.commessasExtras = (c.commessasExtras || []).filter((x) => x.codigo !== valor);
+  if (salvar()) { avisar("Removido da lista"); render(); }
 }
 
 function salvarAjustes() {
@@ -1149,6 +1236,9 @@ document.addEventListener("click", (e) => {
     tema: () => escolherTema(alvo.dataset.valor),
     "pausa-padrao": () => { dados.config.jantarPadrao = !dados.config.jantarPadrao; if (salvar()) render(); },
     "salvar-ajustes": () => { if (salvarAjustes()) { avisar("Ajustes salvos"); render(); } },
+    "novo-item": () => abrirNovoItem(alvo.dataset.tipo),
+    "salvar-item": () => salvarItem(alvo.dataset.tipo, alvo.dataset.destino || ""),
+    "remover-item": () => removerItem(alvo.dataset.tipo, alvo.dataset.valor),
     modelo: () => { fecharDialogo(); escolherModelo(); }, backup: () => { if (usaPasta() && !dados.config.pastaBackup) guiaBackup(); else fazerBackup(); }, "backup-guia": () => fazerBackup(), "backup-trocar-pasta": () => fazerBackup({ trocarPasta: true }), restaurar: () => { fecharDialogo(); restaurarBackup(); }, fechar: fecharDialogo,
     "backup-ativar": () => definirLembreteBackup(true),
     "backup-recusar": () => definirLembreteBackup(false),
@@ -1172,6 +1262,12 @@ document.addEventListener("input", (e) => {
   atualizarCalculo();
 });
 document.addEventListener("change", (e) => {
+  // "+ Adicionar…" na lista de centro de custo ou commessa: volta à opção anterior e abre o cadastro.
+  if (e.target.tagName === "SELECT" && e.target.value === NOVO_ITEM) {
+    e.target.value = e.target.dataset.atual || "";
+    return abrirNovoItem(/centro/.test(e.target.id) ? "centro" : "commessa", e.target.id);
+  }
+  if (e.target.tagName === "SELECT" && "atual" in e.target.dataset) e.target.dataset.atual = e.target.value;
   if (ui.aba !== "registrar") return;
   if (e.target.classList?.contains("hora")) completarHora(e.target);
   if (e.target.id?.startsWith("f-")) { form.alterado = true; atualizarCalculo(); }
