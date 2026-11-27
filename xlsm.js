@@ -22,6 +22,13 @@ const ULTIMA_NGC = 46;
 const FORMULA_HORAS_NGC = "F16-C16-(E16-D16)+H16-G16";
 const COLUNAS_NGC = [["C", "D"], ["E", "F"], ["G", "H"]];
 export const PERIODOS_NGC = ["Manhã", "Tarde", "Noite"];
+// Segundo layout da COMAU ("Relatório de Horas"): mês em G11, dias 1 a 31 nas linhas 14 a 44,
+// Início F, Término G, Intervalo H, x/+24h I, horas J, Atividade K, Centro de Custo L,
+// "Legenda de projetos" em F49:F64 (lista de opções da coluna L) e total em J46.
+const LINHA_C2 = 14;
+const ULTIMA_C2 = 44;
+const LEGENDA_C2 = [49, 64];
+const ehComau2 = (ws) => ws.formula("J46") === `SUM(J${LINHA_C2}:J${ULTIMA_C2})*24` && ws.formula("B14") === "G11";
 
 export class ErroPlanilha extends Error {}
 
@@ -223,6 +230,7 @@ export async function lerModelo(JSZip, arquivo, nome = "") {
     return { tipo: "gme", funcionario: String(ws.atual("F2", sst) || "").trim(), centros: [], centroMaisUsado: null, commessas };
   }
   if (formatoGME) throw new ErroPlanilha("Esta planilha está no formato da GME, mas não tem GME no nome do arquivo. Renomeie o arquivo incluindo GME e escolha de novo.");
+  if (ehComau2(ws)) return lerComau2(ws, sst);
   if (ws.formula("G44") !== "SUM(G12:G42)*24" || ws.formula("B12") !== "D9") throw new ErroPlanilha(MODELO_INVALIDO);
 
   const centros = [];
@@ -239,6 +247,23 @@ export async function lerModelo(JSZip, arquivo, nome = "") {
   const centroMaisUsado = Object.entries(usos).sort((a, b) => b[1] - a[1])[0]?.[0] || centros[0];
   const funcionario = String(ws.atual("H5", sst) || "").trim();
   return { tipo: "comau", funcionario, centros, centroMaisUsado, commessas: [] };
+}
+
+/** Segundo layout da COMAU: centros de custo da legenda F49:F64, nome em K8. */
+function lerComau2(ws, sst) {
+  const centros = [];
+  for (let lin = LEGENDA_C2[0]; lin <= LEGENDA_C2[1]; lin++) {
+    const v = ws.atual(`F${lin}`, sst);
+    if (typeof v === "string" && v.trim() && v.trim() !== "--" && !centros.includes(v)) centros.push(v);
+  }
+  if (!centros.length) throw new ErroPlanilha("O modelo não tem centros de custo na \"Legenda de projetos\" (F49 em diante).");
+  const usos = {};
+  for (let lin = LINHA_C2; lin <= ULTIMA_C2; lin++) {
+    const v = ws.atual(`L${lin}`, sst);
+    if (centros.includes(v)) usos[v] = (usos[v] || 0) + 1;
+  }
+  const centroMaisUsado = Object.entries(usos).sort((a, b) => b[1] - a[1])[0]?.[0] || centros[0];
+  return { tipo: "comau", funcionario: String(ws.atual("K8", sst) || "").trim(), centros, centroMaisUsado, commessas: [] };
 }
 
 // ---------- geração da planilha ----------
@@ -301,6 +326,19 @@ class Planilha {
     const c = this._ler(ref);
     if (!c) throw new ErroPlanilha(`Modelo da planilha inválido: célula ${ref} não encontrada.`);
     this._gravar(ref, c.attrs, null, `<f>${escXml(f)}</f><v>${v}</v>`);
+  }
+
+  /** Fórmula da célula; numa fórmula compartilhada, a da célula-mestre com as linhas relativas deslocadas. */
+  formulaResolvida(ref) {
+    const propria = this.formula(ref);
+    if (propria) return propria;
+    const c = this._ler(ref);
+    const si = c && (c.corpo.match(/<f[^>]*t="shared"[^>]*si="(\d+)"/) || [])[1];
+    if (si === undefined) return null;
+    const mestre = this.xml.match(new RegExp(`<c r="[A-Z]+(\\d+)"[^>]*><f[^>]*t="shared"[^>]*ref="[^"]*"[^>]*si="${si}"[^>]*>([^<]*)</f>`));
+    if (!mestre) return null;
+    const delta = Number(ref.match(/\d+$/)[0]) - Number(mestre[1]);
+    return desXml(mestre[2]).replace(/(\$?)([A-Z]{1,3})(\$?)(\d+)/g, (t, a, col, b, lin) => (b ? t : `${a}${col}${Number(lin) + delta}`));
   }
 
   formula(ref) {
@@ -370,9 +408,16 @@ export async function gerarPlanilha(JSZip, modelo, dados) {
   const textos = criarTextos(await zip.file("xl/sharedStrings.xml").async("string"));
   const sst = textos.lista;
   const indiceTexto = (texto) => textos.indice(texto);
+  const primeiro = serialData(ano, mes, 1);
+  if (ehComau2(ws)) {
+    gerarComau2(ws, textos, dados, doMes, primeiro);
+    zip.file(sheetPath, ws.xml);
+    zip.file("xl/sharedStrings.xml", textos.xmlFinal());
+    const arquivo = await zip.generateAsync({ type: "uint8array", compression: "DEFLATE" });
+    return { arquivo, dias: doMes.length, totalHoras: ws.atual("J46", sst), extensao: (await comMacros(zip)) ? "xlsm" : "xlsx" };
+  }
 
   // Cabeçalho do mês
-  const primeiro = serialData(ano, mes, 1);
   ws.valor("C8", primeiro);
   ws.valor("D9", primeiro);
 
@@ -468,6 +513,101 @@ export async function gerarPlanilha(JSZip, modelo, dados) {
   const arquivo = await zip.generateAsync({ type: "uint8array", compression: "DEFLATE" });
   // A planilha sai no mesmo formato do modelo: .xlsm (com macros) ou .xlsx (salva sem macros).
   return { arquivo, dias: doMes.length, totalHoras: total, extensao: (await comMacros(zip)) ? "xlsm" : "xlsx" };
+}
+
+/**
+ * Segundo layout da COMAU: grava o mês, os lançamentos (início, término, intervalo, atividade = observação,
+ * centro de custo) e recalcula o que a planilha mostra (horas do dia, total, resumo por centro de custo).
+ * As outras abas (ex.: "21 A 20") não mudam, e o nome da aba também não.
+ */
+function gerarComau2(ws, textos, dados, doMes, primeiro) {
+  const { mes } = dados;
+  const sst = textos.lista;
+  ws.valor("G11", primeiro);
+  const porDia = Object.fromEntries(doMes.map((r) => [Number(r.data.slice(8, 10)), r]));
+  const J = {}, L = {}, R = {}, F = {};
+  for (let lin = LINHA_C2; lin <= ULTIMA_C2; lin++) {
+    const dia = lin - LINHA_C2 + 1, r = porDia[dia];
+    const f = r ? fracao(r.inicio) : 0, g = r ? fracao(r.fim) : 0, h = r ? pausaMinutos(r) / 1440 : 0;
+    const centro = r ? (r.centro || dados.centroPadrao) : null;
+    if (r && !centro) throw new ErroPlanilha(`O dia ${pad(dia)}/${pad(mes)} está sem centro de custo.`);
+    ws.valor(`F${lin}`, r ? f : null);
+    ws.valor(`G${lin}`, r ? g : null);
+    ws.valor(`H${lin}`, h || null);
+    ws.valor(`I${lin}`, null);
+    ws.valor(`K${lin}`, r && r.obs ? textos.indice(r.obs) : null, { compartilhado: true });
+    ws.valor(`L${lin}`, centro ? textos.indice(centro) : null, { compartilhado: true });
+    const b = primeiro + dia - 1;
+    ws.calculado(`B${lin}`, b);
+    J[lin] = (g - f + (g < f ? 1 : 0)) - h;
+    ws.calculado(`J${lin}`, J[lin]);
+    R[lin] = f > 0 ? b : "--";
+    ws.calculado(`R${lin}`, R[lin]);
+    F[lin] = f;
+    L[lin] = centro;
+  }
+
+  // Centro de custo adicionado no app: entra num espaço livre da legenda (F49:F64), a lista da coluna L.
+  const legenda = [];
+  for (let lin = LEGENDA_C2[0]; lin <= LEGENDA_C2[1]; lin++) legenda.push({ lin, v: String(ws.atual(`F${lin}`, sst) ?? "").trim() });
+  for (const centro of new Set(Object.values(L).filter(Boolean))) {
+    if (legenda.some((l) => l.v === centro.trim())) continue;
+    const livre = legenda.find((l) => l.v === "" || l.v === "--");
+    if (!livre) break;
+    ws.valor(`F${livre.lin}`, textos.indice(centro), { compartilhado: true });
+    livre.v = centro.trim();
+  }
+
+  // Totais
+  const total = Object.values(J).reduce((a, b) => a + b, 0) * 24;
+  ws.calculado("J46", total);
+  const ajuste = Number(ws.atual("H46", sst) ?? 1) || 0;
+  ws.calculado("L45", ((Number(ws.atual("E46", sst)) || 0) + total) * ajuste);
+  const datas = Object.values(R).filter((v) => typeof v === "number");
+  ws.calculado("U2", datas.length ? Math.min(...datas) : 0);
+  ws.calculado("U3", datas.length ? Math.max(...datas) : 0);
+  ws.calculado("U4", Object.values(F).filter((v) => v > 0).length);
+  ws.calculado("U5", ws.atual("L45", sst));
+
+  // Resumo por centro de custo: T<n> = F<legenda>, U<n> = SUMIF($L$14:L<a>, T<n>, J$14:$J<b>)*24*H46.
+  // Como no Excel, a soma usa o tamanho do intervalo do critério (L14 até L<a>).
+  const celula = (col, lin) => {
+    if (lin >= LINHA_C2 && lin <= ULTIMA_C2) return col === "L" ? L[lin] : J[lin];
+    return ws.atual(`${col}${lin}`, sst);
+  };
+  const resumo = {};
+  for (let lin = 1; lin <= 40; lin++) {
+    const ft = ws.formulaResolvida(`T${lin}`), mt = ft && ft.match(/^F(\d+)$/);
+    if (mt) {
+      const v = ws.atual(`F${mt[1]}`, sst);
+      ws.calculado(`T${lin}`, v === null ? 0 : v);
+    }
+    const fu = ws.formula(`U${lin}`);
+    const m = fu && fu.match(/^SUMIF\(\$L\$14:L(\d+),T(\d+),\$?J\$?14:\$?J\d+\)\*24\*H46$/);
+    if (!m) continue;
+    const crit = ws.atual(`T${m[2]}`, sst);
+    if (typeof crit === "string" && crit.startsWith("#")) continue;
+    let soma = 0;
+    for (let l = LINHA_C2; l <= Number(m[1]); l++) {
+      const lv = celula("L", l), jv = celula("J", l);
+      const casa = typeof crit === "string"
+        ? typeof lv === "string" && lv.toLowerCase() === crit.toLowerCase()
+        : typeof lv === "number" && lv === crit;
+      if (casa && typeof jv === "number") soma += jv;
+    }
+    resumo[lin] = soma * 24 * ajuste;
+    ws.calculado(`U${lin}`, resumo[lin]);
+  }
+  if (ws.formula("U27") === "SUM(U9:U26)") {
+    let soma = 0;
+    for (let lin = 9; lin <= 26; lin++) { const v = ws.atual(`U${lin}`, sst); if (typeof v === "number") soma += v; }
+    ws.calculado("U27", soma);
+  }
+  // Legenda: K49:K64 = U<n>
+  for (let lin = LEGENDA_C2[0]; lin <= LEGENDA_C2[1]; lin++) {
+    const m = (ws.formulaResolvida(`K${lin}`) || "").match(/^U(\d+)$/);
+    if (m && resumo[m[1]] !== undefined) ws.calculado(`K${lin}`, resumo[m[1]]);
+  }
 }
 
 /** O modelo é .xlsm quando o [Content_Types].xml marca a pasta de trabalho como habilitada para macros. */
