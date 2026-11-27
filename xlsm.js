@@ -16,7 +16,7 @@ const MIN_13H = 780;
 const MIN_13H30 = 810;
 const MIN_18H = 1080;
 const MIN_DIA = 1440;
-// Planilha NGC: linhas dos dias 1 a 31, períodos manhã (C/D), tarde (E/F) e noite (G/H), total do dia em I.
+// Planilha NGC: linhas dos dias 1 a 31, campos manhã (C/D), tarde (E/F) e noite (G/H) na posição do app, total do dia em I.
 const LINHA_NGC = 16;
 const ULTIMA_NGC = 46;
 const FORMULA_HORAS_NGC = "F16-C16-(E16-D16)+H16-G16";
@@ -294,6 +294,13 @@ class Planilha {
     if (!f) throw new ErroPlanilha(`Modelo da planilha inválido: fórmula em ${ref} não encontrada.`);
     const tipo = typeof v !== "string" ? null : v.startsWith("#") ? "e" : "str";
     this._gravar(ref, c.attrs, tipo, `${f}<v>${typeof v === "string" ? escXml(v) : v}</v>`);
+  }
+
+  /** Troca a fórmula de uma célula (sem compartilhamento) e grava o valor calculado. */
+  formulaNova(ref, f, v) {
+    const c = this._ler(ref);
+    if (!c) throw new ErroPlanilha(`Modelo da planilha inválido: célula ${ref} não encontrada.`);
+    this._gravar(ref, c.attrs, null, `<f>${escXml(f)}</f><v>${v}</v>`);
   }
 
   formula(ref) {
@@ -623,46 +630,32 @@ async function gerarGME(JSZip, modelo, dados) {
 
 // ---------- planilha NGC ----------
 /**
- * Na NGC, as batidas do ponto formam pares entrada/saída (trechosDosPeriodos), gravados em sequência
- * nas colunas da planilha (1º par em C/D, 2º em E/F, 3º em G/H), para a fórmula do dia somar certo.
- * O que passa da meia-noite vai para a linha do dia seguinte. O que sobra fica 00:00 e não conta.
+ * Na NGC, cada horário vai exatamente na coluna em que o colaborador o preencheu no app
+ * (De/Até da manhã em C/D, da tarde em E/F, da noite em G/H). Campo vazio vira 00:00.
+ * Como as posições podem fugir do padrão (ex.: De 06:00 na manhã e Até 13:00 na noite),
+ * a fórmula do total de cada linha é montada com as batidas em ordem, em pares entrada/saída:
+ * =H16-C16 nesse exemplo. Trecho que passa da meia-noite soma +1 dia e fica na linha do ponto.
  */
+const CELULAS_NGC = COLUNAS_NGC.flat();
+
+/** Fórmula do total do dia a partir das batidas (pares em ordem); sem par completo, 0. */
+function formulaDiaNGC(batidas, lin) {
+  const partes = [];
+  for (let k = 0; k + 1 < batidas.length; k += 2) {
+    const x = batidas[k], y = batidas[k + 1];
+    const cx = `${CELULAS_NGC[x.campo]}${lin}`, cy = `${CELULAS_NGC[y.campo]}${lin}`;
+    partes.push(y.m >= MIN_DIA && minutosDe(y.h) < minutosDe(x.h) ? `(${cy}-${cx}+1)` : `${cy}-${cx}`);
+  }
+  return partes.length ? partes.join("+") : "0";
+}
+
 async function gerarNGC(JSZip, modelo, dados) {
   const { ano, mes, registros } = dados;
   const prefixo = `${ano}-${pad(mes)}-`;
   const noPeriodo = dentroDoPeriodo(dados.periodo);
   const doMes = registros.filter((r) => r.data.startsWith(prefixo) && noPeriodo(r.data));
   if (!doMes.length) throw semDias(ano, mes, dados.periodo);
-
-  // Trechos por data: os do próprio ponto ficam no período escolhido; o que passa da meia-noite segue para o dia seguinte.
-  const proprios = {}, seguintes = {}, registroPorData = {};
-  for (const r of registros) {
-    const trechos = trechosDosPeriodos(r.periodos);
-    if (!trechos.length) continue;
-    const seguinte = diaSeguinte(r.data);
-    const doMesAtual = r.data.startsWith(prefixo);
-    if (!doMesAtual && !(seguinte.startsWith(prefixo) && trechos.some((t) => t.b > MIN_DIA))) continue;
-    if (doMesAtual) registroPorData[r.data] = r;
-    for (const { i, a, b } of trechos) {
-      if (a < MIN_DIA && doMesAtual) (proprios[r.data] ||= []).push({ i, a, b: Math.min(b, MIN_DIA) });
-      if (b > MIN_DIA && seguinte.startsWith(prefixo)) (seguintes[seguinte] ||= []).push({ a: Math.max(a, MIN_DIA) - MIN_DIA, b: b - MIN_DIA });
-    }
-  }
-
-  // Coloca os trechos de uma data nos três períodos da planilha.
-  function periodosDaData(data) {
-    const pares = [null, null, null];
-    const meus = proprios[data] || [], vindos = (seguintes[data] || []).sort((x, y) => x.a - y.a);
-    meus.forEach(({ i, a, b }) => { pares[i] = [a, b]; });
-    if (!vindos.length) return pares;
-    if (meus.length + vindos.length > 3)
-      throw new ErroPlanilha(`O dia ${diaCurto(data)} tem mais trechos de trabalho do que os 3 períodos da planilha (o turno do dia anterior passou da meia-noite).`);
-    // O que veio da noite anterior é o começo do dia: entra nos primeiros períodos, antes dos do próprio dia.
-    const primeiroMeu = meus.length ? Math.min(...meus.map((t) => t.i)) : 3;
-    if (vindos.length <= primeiroMeu) { vindos.forEach(({ a, b }, k) => { pares[k] = [a, b]; }); return pares; }
-    const todos = [...vindos, ...meus].sort((x, y) => x.a - y.a);
-    return [0, 1, 2].map((k) => (todos[k] ? [todos[k].a, todos[k].b] : null));
-  }
+  const registroPorData = Object.fromEntries(doMes.map((r) => [r.data, r]));
 
   const zip = await JSZip.loadAsync(modelo);
   const sheetPath = "xl/worksheets/sheet1.xml";
@@ -677,22 +670,21 @@ async function gerarNGC(JSZip, modelo, dados) {
     const data = `${prefixo}${pad(dia)}`;
     // Fora do mês ou do período escolhido, a linha fica em branco (sem 00:00).
     const existe = dia <= diasNoMes && noPeriodo(data);
-    const pares = existe ? periodosDaData(data) : [null, null, null];
-    let horas = 0;
-    COLUNAS_NGC.forEach(([de, ate], i) => {
-      const [a, b] = pares[i] || [0, 0];
-      // Dias do mês: período sem horário vira 00:00. As demais linhas ficam vazias.
-      ws.valor(`${de}${lin}`, existe ? a / MIN_DIA : null);
-      ws.valor(`${ate}${lin}`, existe ? b / MIN_DIA : null);
-      horas += (b - a) / MIN_DIA;
+    const r = existe ? registroPorData[data] : null;
+    const campos = (r?.periodos || []).flat();
+    CELULAS_NGC.forEach((col, k) => {
+      const h = campos[k];
+      ws.valor(`${col}${lin}`, existe ? (h ? minutosDe(h) / MIN_DIA : 0) : null);
     });
-    ws.calculado(`I${lin}`, horas);
+    const batidas = batidasNGC(r?.periodos);
+    const horas = trechosDosPeriodos(r?.periodos).reduce((s, { a, b }) => s + (b - a), 0) / MIN_DIA;
+    // A fórmula compartilhada do modelo vira uma fórmula própria por linha.
+    ws.formulaNova(`I${lin}`, batidas.length ? formulaDiaNGC(batidas, lin) : `F${lin}-C${lin}-(E${lin}-D${lin})+H${lin}-G${lin}`, horas);
     total += horas;
     // Centro de Custo e proj. ficam em branco; a observação vai na linha do dia do ponto.
     ws.valor(`J${lin}`, null);
     ws.valor(`K${lin}`, null);
-    const obs = existe ? registroPorData[data]?.obs : "";
-    ws.valor(`L${lin}`, obs ? textos.indice(obs) : null, { compartilhado: true });
+    ws.valor(`L${lin}`, r?.obs ? textos.indice(r.obs) : null, { compartilhado: true });
   }
   ws.calculado("I47", total);
 

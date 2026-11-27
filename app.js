@@ -739,7 +739,7 @@ async function criarComprovante(ano, mes, extra = {}) {
       return {
         dia: pad(d.getDate()), semana: SEMANA[d.getDay()], mais1: viraDia(r),
         // Como na planilha: os pares entrada/saída em sequência; batida sem par não conta e não aparece.
-        periodos: (() => { const p = paresNGC(r.periodos || []).filter((x) => x.ate); return [0, 1, 2].map((i) => (p[i] ? `${p[i].de}–${p[i].ate}` : "—")); })(),
+        periodos: soValidos(r.periodos || periodosVazios()).map(([de, ate]) => (de || ate ? `${de || "—"}–${ate || "—"}` : "—")),
         horas: fmtHM(minutosTrabalhados(r)), obs: r.obs || "", semFim: false,
       };
     }),
