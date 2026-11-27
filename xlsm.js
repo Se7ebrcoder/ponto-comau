@@ -1,4 +1,4 @@
-// Leitura do informe (.xlsx) e geração das planilhas de horas (COMAU .xlsm e GME .xlsx) sem Excel.
+// Leitura do informe (.xlsx) e geração das planilhas de horas (COMAU .xlsm ou .xlsx, GME e NGC .xlsx) sem Excel.
 // O arquivo é editado direto no XML: só as células de lançamento mudam, e os valores
 // das fórmulas são recalculados aqui para a planilha abrir certa até em pré-visualização.
 
@@ -183,7 +183,7 @@ export async function lerInforme(JSZip, arquivo) {
 }
 
 // ---------- modelo ----------
-const MODELO_INVALIDO = "O arquivo não é uma planilha de horas conhecida. Escolha uma planilha oficial da COMAU (.xlsm), da GME (.xlsx) ou da NGC (.xlsx).";
+const MODELO_INVALIDO = "O arquivo não é uma planilha de horas conhecida. Escolha uma planilha oficial da COMAU (.xlsm ou .xlsx), da GME (.xlsx) ou da NGC (.xlsx).";
 const MODELO_GME_INVALIDO = "O arquivo tem GME no nome, mas não está no formato da planilha de horas da GME.";
 const MODELO_NGC_INVALIDO = "O arquivo tem NGC no nome, mas não está no formato da planilha de horas da NGC.";
 
@@ -466,7 +466,14 @@ export async function gerarPlanilha(JSZip, modelo, dados) {
   zip.file("xl/workbook.xml", wb);
   zip.file("docProps/app.xml", app);
   const arquivo = await zip.generateAsync({ type: "uint8array", compression: "DEFLATE" });
-  return { arquivo, dias: doMes.length, totalHoras: total };
+  // A planilha sai no mesmo formato do modelo: .xlsm (com macros) ou .xlsx (salva sem macros).
+  return { arquivo, dias: doMes.length, totalHoras: total, extensao: (await comMacros(zip)) ? "xlsm" : "xlsx" };
+}
+
+/** O modelo é .xlsm quando o [Content_Types].xml marca a pasta de trabalho como habilitada para macros. */
+async function comMacros(zip) {
+  const tipos = zip.file("[Content_Types].xml");
+  return !!tipos && /sheet\.macroEnabled\.main\+xml/.test(await tipos.async("string"));
 }
 
 // ---------- planilha GME ----------
@@ -695,10 +702,10 @@ async function gerarNGC(JSZip, modelo, dados) {
 }
 
 /** Nome padrão do arquivo; o primeiro nome vem do campo "Funcionário" do modelo. Na NGC, vai o nome completo. */
-export function nomeArquivo(ano, mes, funcionario, tipo = "comau") {
+export function nomeArquivo(ano, mes, funcionario, tipo = "comau", extensao = "xlsm") {
   if (tipo === "ngc") return `NGC_${String(funcionario || "").trim().toUpperCase() || "FUNCIONARIO"}_${pad(mes)}-${ano}.xlsx`;
   const primeiro = String(funcionario || "").trim().split(/\s+/)[0] || "Funcionario";
   return tipo === "gme"
     ? `Tabela Horas_${primeiro}_Projeto-GME_${pad(mes)}_${ano}.xlsx`
-    : `Tabela Horas_${primeiro}_Assistência-COMAU_${pad(mes)}_${ano}.xlsm`;
+    : `Tabela Horas_${primeiro}_Assistência-COMAU_${pad(mes)}_${ano}.${extensao === "xlsx" ? "xlsx" : "xlsm"}`;
 }

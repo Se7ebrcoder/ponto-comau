@@ -13,6 +13,8 @@ const MESES = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julh
 const SEMANA = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
 const MIME_XLSM = "application/vnd.ms-excel.sheet.macroEnabled.12";
 const MIME_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+// A COMAU sai .xlsm ou .xlsx, igual ao modelo escolhido; GME e NGC são sempre .xlsx.
+const mimeDe = (tipo, r) => (tipo === "comau" && r.extensao !== "xlsx" ? MIME_XLSM : MIME_XLSX);
 const ROTULO_GERAR = "Gerar planilha de horas";
 
 const $ = (sel, raiz = document) => raiz.querySelector(sel);
@@ -571,7 +573,7 @@ async function gerar() {
       // Na GME e na NGC, o fim de um turno do mês anterior pode cair no dia 1, por isso vão todos os registros do cliente.
       registros: tipo === "comau" ? doMes : Object.values(dados.registros).filter((x) => x.cliente === tipo),
     });
-    const arquivo = new File([r.arquivo], nomeArquivo(ano, mes, info.funcionario, tipo), { type: tipo === "comau" ? MIME_XLSM : MIME_XLSX });
+    const arquivo = new File([r.arquivo], nomeArquivo(ano, mes, info.funcionario, tipo, r.extensao), { type: mimeDe(tipo, r) });
     // O comprovante já fica pronto aqui: o iPhone só compartilha arquivos prontos no toque do botão.
     const comprovante = await criarComprovante(ano, mes);
     abrirDialogo(`<div class="folha">
@@ -663,8 +665,8 @@ async function gerarPorPeriodo() {
       diasLancados += r.dias;
       const fimMes = `${prefixo}${pad(new Date(ano, mes, 0).getDate())}`;
       const ini = de > `${prefixo}01` ? de : `${prefixo}01`, fim = ate < fimMes ? ate : fimMes;
-      const nome = nomeArquivo(ano, mes, info.funcionario, cliente).replace(/(\.\w+)$/, `_conferencia_${ini.slice(8)}a${fim.slice(8)}$1`);
-      arquivos.push(new File([r.arquivo], nome, { type: cliente === "comau" ? MIME_XLSM : MIME_XLSX }));
+      const nome = nomeArquivo(ano, mes, info.funcionario, cliente, r.extensao).replace(/(\.\w+)$/, `_conferencia_${ini.slice(8)}a${fim.slice(8)}$1`);
+      arquivos.push(new File([r.arquivo], nome, { type: mimeDe(cliente, r) }));
     }
     const comprovante = await criarComprovante(null, null, {
       lista, titulo: `${dataBR(de)} a ${dataBR(ate)}`,
