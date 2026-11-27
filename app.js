@@ -846,10 +846,6 @@ function telaAjustes() {
       </div>
       <button class="interruptor" data-acao="pausa-padrao" role="switch" aria-checked="${c.jantarPadrao}" aria-label="Pausa de 60 minutos por padrão"><span></span></button>
     </div>`}
-    ${modeloGME() || (!modeloNGC() && modelos.comau) ? `<div class="linha">
-      <span class="cresce"></span>
-      <button class="link" data-acao="salvar-ajustes">Salvar</button>
-    </div>` : ""}
     ${secaoLista()}
 
     <h2 class="secao">Modelo da planilha</h2>
@@ -1235,7 +1231,6 @@ document.addEventListener("click", (e) => {
     "alternar-tema": () => escolherTema(temaEfetivo() === "dark" ? "light" : "dark"),
     tema: () => escolherTema(alvo.dataset.valor),
     "pausa-padrao": () => { dados.config.jantarPadrao = !dados.config.jantarPadrao; if (salvar()) render(); },
-    "salvar-ajustes": () => { if (salvarAjustes()) { avisar("Ajustes salvos"); render(); } },
     "novo-item": () => abrirNovoItem(alvo.dataset.tipo),
     "salvar-item": () => salvarItem(alvo.dataset.tipo, alvo.dataset.destino || ""),
     "remover-item": () => removerItem(alvo.dataset.tipo, alvo.dataset.valor),
@@ -1268,6 +1263,8 @@ document.addEventListener("change", (e) => {
     return abrirNovoItem(/centro/.test(e.target.id) ? "centro" : "commessa", e.target.id);
   }
   if (e.target.tagName === "SELECT" && "atual" in e.target.dataset) e.target.dataset.atual = e.target.value;
+  // Padrões de Ajustes: salvam sozinhos ao escolher (sem botão Salvar).
+  if (e.target.id === "a-centro" || e.target.id === "a-commessa") { if (salvarAjustes()) avisar("Padrão salvo"); return; }
   if (ui.aba !== "registrar") return;
   if (e.target.classList?.contains("hora")) completarHora(e.target);
   if (e.target.id?.startsWith("f-")) { form.alterado = true; atualizarCalculo(); }
