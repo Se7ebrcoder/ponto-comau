@@ -28,7 +28,9 @@ export const PERIODOS_NGC = ["Manhã", "Tarde", "Noite"];
 const LINHA_C2 = 14;
 const ULTIMA_C2 = 44;
 const LEGENDA_C2 = [49, 64];
-const ehComau2 = (ws) => ws.formula("J46") === `SUM(J${LINHA_C2}:J${ULTIMA_C2})*24` && ws.formula("B14") === "G11";
+// Reconhecido pelos totais (J46 e L45): há cópias com as datas e horas do dia digitadas por cima das fórmulas,
+// e na geração essas fórmulas voltam (gerarComau2).
+const ehComau2 = (ws) => ws.formula("J46") === `SUM(J${LINHA_C2}:J${ULTIMA_C2})*24` && ws.formula("L45") === "(E46+J46)*H46";
 
 export class ErroPlanilha extends Error {}
 
@@ -323,9 +325,14 @@ class Planilha {
 
   /** Troca a fórmula de uma célula (sem compartilhamento) e grava o valor calculado. */
   formulaNova(ref, f, v) {
-    const c = this._ler(ref);
-    if (!c) throw new ErroPlanilha(`Modelo da planilha inválido: célula ${ref} não encontrada.`);
+    const c = this._ler(ref) || this._criar(ref);
     this._gravar(ref, c.attrs, null, `<f>${escXml(f)}</f><v>${v}</v>`);
+  }
+
+  /** A célula tem fórmula (própria ou compartilhada)? */
+  temFormula(ref) {
+    const c = this._ler(ref);
+    return !!c && /<f[\s>/]/.test(c.corpo);
   }
 
   /** Fórmula da célula; numa fórmula compartilhada, a da célula-mestre com as linhas relativas deslocadas. */
@@ -523,6 +530,11 @@ export async function gerarPlanilha(JSZip, modelo, dados) {
 function gerarComau2(ws, textos, dados, doMes, primeiro) {
   const { mes } = dados;
   const sst = textos.lista;
+  // Datas (B) e horas do dia (J) digitadas por cima das fórmulas voltam a ser fórmula, como no modelo original.
+  for (let lin = LINHA_C2; lin <= ULTIMA_C2; lin++) {
+    if (!ws.temFormula(`B${lin}`)) ws.formulaNova(`B${lin}`, lin === LINHA_C2 ? "G11" : `B${lin - 1}+1`, 0);
+    if (!ws.temFormula(`J${lin}`)) ws.formulaNova(`J${lin}`, `(G${lin}-F${lin}+(G${lin}<F${lin}))-H${lin}`, 0);
+  }
   ws.valor("G11", primeiro);
   const porDia = Object.fromEntries(doMes.map((r) => [Number(r.data.slice(8, 10)), r]));
   const J = {}, L = {}, R = {}, F = {};
