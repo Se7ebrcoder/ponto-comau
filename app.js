@@ -8,7 +8,6 @@ const CHAVE_MODELO_NGC = "ponto-comau.modelo-ngc";
 const CLIENTES = ["comau", "gme", "ngc"];
 const NOME_CLIENTE = { comau: "COMAU", gme: "GME", ngc: "NGC" };
 const CHAVES_MODELO = { comau: CHAVE_MODELO, gme: CHAVE_MODELO_GME, ngc: CHAVE_MODELO_NGC };
-const CHAVE_TAXA = { comau: "taxaPadrao", gme: "taxaPadraoGME", ngc: "taxaPadraoNGC" };
 const CHAVE_TEMA = "ponto-comau.tema";
 const MESES = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
 const SEMANA = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"];
@@ -19,7 +18,6 @@ const ROTULO_GERAR = "Gerar planilha de horas";
 const $ = (sel, raiz = document) => raiz.querySelector(sel);
 const pad = (n) => String(n).padStart(2, "0");
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const reais = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
 // ---------- Datas ----------
@@ -73,20 +71,10 @@ function minutosTrabalhados(r) {
   if (min < 0) min += 1440;
   return Math.max(0, min - pausaDe(r));
 }
-// Valor de cada dia arredondado a centavos, como no informe; o mês soma os dias.
-const valorDoDia = (r) => Math.round((minutosTrabalhados(r) / 60) * (r.taxa || 0) * 100) / 100;
 const fmtHM = (min) => `${pad(Math.floor(min / 60))}:${pad(min % 60)}`;
 const viraDia = (r) => (r.periodos ? trechosValidos(r.periodos).some(({ b }) => b > 1440)
   : horaOk(r.inicio) && horaOk(r.fim) && minutosDe(r.fim) < minutosDe(r.inicio));
 
-function lerTaxa(texto) {
-  // Com vírgula, o ponto é separador de milhar (1.234,50); sem vírgula, é decimal (47.50).
-  const t = String(texto ?? "").trim();
-  const v = Number(t.includes(",") ? t.replace(/\./g, "").replace(",", ".") : t);
-  return Number.isFinite(v) && v > 0 ? v : null;
-}
-// Preço 0 fica com o campo vazio (mostra "0" de exemplo), para digitar sem precisar apagar.
-const taxaTexto = (v) => (!v ? "" : String(v).replace(".", ","));
 
 // ---------- Backup ----------
 const ARQUIVO_BACKUP = "backup-pontos.json";
@@ -98,7 +86,7 @@ const ehAndroid = /Android/i.test(navigator.userAgent);
 const temPastaNoAparelho = ehAndroid && !!window.showDirectoryPicker;
 
 // ---------- Armazenamento (só neste aparelho) ----------
-const PADRAO = { registros: {}, config: { taxaPadrao: 0, centroPadrao: null, jantarPadrao: true, commessaPadrao: "", ultimoBackup: null, lembreteBackup: null, alteradoEm: null, pastaBackup: null, pastaFalhou: false } };
+const PADRAO = { registros: {}, config: { centroPadrao: null, jantarPadrao: true, commessaPadrao: "", ultimoBackup: null, lembreteBackup: null, alteradoEm: null, pastaBackup: null, pastaFalhou: false } };
 let dados = carregar();
 let modelos = carregarModelos(); // { comau, gme, ngc }: cada um { arquivo, importadoEm, funcionario, centros, base64 } ou null
 
@@ -108,7 +96,7 @@ function chaveRegistro(data, cliente) { return cliente && cliente !== "comau" ? 
 // Pontos antigos não têm cliente: períodos indicam NGC; almoço ou commessa, GME; os demais são da COMAU.
 function normalizarRegistros(registros) {
   const saida = {};
-  for (const r of Object.values(registros)) {
+  for (const { taxa, ...r } of Object.values(registros)) {
     const cliente = r.cliente || (r.periodos ? "ngc" : r.almocoSaida || r.commessa ? "gme" : "comau");
     // NGC: pontos salvos antes sem o Até deixam de ficar "sem fim".
     saida[chaveRegistro(r.data, cliente)] = { ...r, cliente, ...(r.periodos ? resumoPeriodos(r.periodos) : {}) };
@@ -116,10 +104,16 @@ function normalizarRegistros(registros) {
   return saida;
 }
 
+// O valor hora foi removido do app (gerava conflito entre os funcionários): nenhum preço fica guardado.
+function semPreco(config) {
+  const { taxaPadrao, taxaPadraoGME, taxaPadraoNGC, ...resto } = config;
+  return resto;
+}
+
 function carregar() {
   try {
     const salvo = JSON.parse(localStorage.getItem(CHAVE));
-    if (salvo && salvo.registros) return { registros: normalizarRegistros(salvo.registros), config: { ...PADRAO.config, ...salvo.config } };
+    if (salvo && salvo.registros) return { registros: normalizarRegistros(salvo.registros), config: semPreco({ ...PADRAO.config, ...salvo.config }) };
   } catch { /* sem dados ou armazenamento bloqueado */ }
   return structuredClone(PADRAO);
 }
@@ -147,7 +141,6 @@ function clienteInicial() {
 // No cliente GME, o ponto pede almoço e commessa; na NGC, os períodos manhã, tarde e noite.
 const modeloGME = () => ui.cliente === "gme";
 const modeloNGC = () => ui.cliente === "ngc";
-const taxaPadrao = () => dados.config[CHAVE_TAXA[ui.cliente]] ?? dados.config.taxaPadrao;
 
 // Opções do ponto, lidas da legenda de cada modelo.
 const centroPadrao = () => dados.config.centroPadrao || modelos.comau?.centros?.[0] || "";
@@ -231,12 +224,12 @@ const formNovo = (data = chaveData(new Date())) => ({
   data, inicio: "", fim: "", jantar: ui.cliente === "comau" && dados.config.jantarPadrao, almocoSaida: "", almocoVolta: "",
   // Só a NGC tem períodos: nos outros clientes o cálculo usa início, fim e pausa.
   periodos: modeloNGC() ? periodosVazios() : undefined,
-  taxa: taxaPadrao(), commessa: dados.config.commessaPadrao || "", centro: centroPadrao(), obs: "", original: null, alterado: false,
+  commessa: dados.config.commessaPadrao || "", centro: centroPadrao(), obs: "", original: null, alterado: false,
 });
 const formDe = (r) => ({
   data: r.data, inicio: r.inicio || "", fim: r.fim || "", jantar: !!r.jantar, almocoSaida: r.almocoSaida || "", almocoVolta: r.almocoVolta || "",
   periodos: r.periodos ? r.periodos.map((p) => [...p]) : modeloNGC() ? periodosVazios() : undefined,
-  taxa: r.taxa ?? taxaPadrao(), commessa: r.commessa ?? (dados.config.commessaPadrao || ""), centro: r.centro || centroPadrao(), obs: r.obs || "", original: r.data, alterado: false,
+  commessa: r.commessa ?? (dados.config.commessaPadrao || ""), centro: r.centro || centroPadrao(), obs: r.obs || "", original: r.data, alterado: false,
 });
 function navegar(aba, { manterForm = false } = {}) {
   ui.aba = aba;
@@ -317,9 +310,9 @@ function telaRegistrar() {
   const pausaPendente = gme && f.original && f.jantar && !f.almocoSaida;
   const comPausa = f.jantar || (f.almocoSaida && f.almocoVolta);
   return `<div class="total">
-      <span class="rotulo">Valor total</span>
-      <span class="grande" id="c-valor">R$ 0,00</span>
-      <span class="rotulo num" id="c-sub">00:00 h · 0 min</span>
+      <span class="rotulo">Horas trabalhadas</span>
+      <span class="grande" id="c-horas">00:00 h</span>
+      <span class="rotulo num" id="c-sub">0 min</span>
     </div>
     <div>
       <label class="linha linha-data">
@@ -341,11 +334,6 @@ function telaRegistrar() {
           <button data-acao="pausa" data-valor="60" aria-pressed="${!!comPausa}">60</button>
         </div>
       </div>`}
-      <div class="linha">
-        <span class="lbl cresce">Preço por hora</span>
-        <span class="unidade">R$</span>
-        <input id="f-taxa" class="numero" inputmode="decimal" value="${taxaTexto(f.taxa)}" placeholder="0" aria-label="Preço por hora">
-      </div>
       ${gme ? `<div class="linha empilhada">
         <span class="lbl">Commessa</span>
         ${campoCommessa("f-commessa", f.commessa, "Commessa")}
@@ -364,7 +352,6 @@ function telaRegistrar() {
 function lerFormulario() {
   form.data = $("#f-data").value;
   form.obs = $("#f-obs").value.trim();
-  form.taxa = lerTaxa($("#f-taxa").value);
   if (modeloNGC()) {
     form.periodos = [0, 1, 2].map((i) => [$(`#f-p${i}-de`).value, $(`#f-p${i}-ate`).value]);
     Object.assign(form, resumoPeriodos(form.periodos), { jantar: false });
@@ -385,8 +372,8 @@ function lerFormulario() {
 function atualizarCalculo() {
   lerFormulario();
   const min = minutosTrabalhados(form);
-  $("#c-valor").textContent = reais.format(valorDoDia(form));
-  $("#c-sub").textContent = `${fmtHM(min)} h · ${min} min`;
+  $("#c-horas").textContent = `${fmtHM(min)} h`;
+  $("#c-sub").textContent = `${min} min`;
   $("#c-data").textContent = form.data ? dataDe(form.data).toLocaleDateString("pt-BR", { day: "numeric", month: "short", year: "numeric" }) : "—";
   $("#c-mais1").hidden = !viraDia(form);
 }
@@ -395,7 +382,6 @@ function validar(v) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(v.data)) return "Informe a data.";
   const erroHorarios = modeloNGC() ? validarPeriodos(v.periodos) : validarTurno(v);
   if (erroHorarios) return erroHorarios;
-  if (!v.taxa) return "Informe o preço por hora (ex.: 50 ou 47,50). Para já vir preenchido, defina o padrão em Ajustes.";
   if (dados.registros[chaveRegistro(v.data, ui.cliente)] && v.data !== v.original) return `Já existe um registro em ${curta(v.data)}. Para alterá-lo, toque nele em Registros.`;
   const conflito = pontoSobreposto(v);
   if (conflito) return `Este horário se sobrepõe ao ponto da ${NOME_CLIENTE[conflito.cliente]} de ${curta(conflito.data)} (${conflito.inicio}–${conflito.fim}).`;
@@ -466,9 +452,9 @@ function salvarRegistro() {
   const erro = validar(form);
   if (erro) return mostrarErro("Não foi possível salvar", erro);
   if (form.original && form.original !== form.data) delete dados.registros[chaveRegistro(form.original, ui.cliente)];
-  const { data, inicio, fim, jantar, almocoSaida, almocoVolta, taxa, commessa, centro, obs } = form;
+  const { data, inicio, fim, jantar, almocoSaida, almocoVolta, commessa, centro, obs } = form;
   const extra = modeloNGC() ? { periodos: form.periodos } : modeloGME() ? { commessa } : { centro };
-  const registro = { data, cliente: ui.cliente, inicio, fim, jantar, almocoSaida, almocoVolta, taxa, obs, ...extra };
+  const registro = { data, cliente: ui.cliente, inicio, fim, jantar, almocoSaida, almocoVolta, obs, ...extra };
   dados.registros[chaveRegistro(data, ui.cliente)] = registro;
   if (!salvar()) return;
   const editando = form.original;
@@ -493,7 +479,6 @@ function telaRegistros() {
   const lista = registrosDoMes(ano, mes);
   const completos = lista.filter((r) => r.inicio && r.fim);
   const minutos = completos.reduce((s, r) => s + minutosTrabalhados(r), 0);
-  const valor = completos.reduce((s, r) => s + valorDoDia(r), 0);
   const seta = (d) => `<svg viewBox="0 0 24 24"><path d="${d}"/></svg>`;
 
   const itens = lista.map((r) => {
@@ -501,14 +486,14 @@ function telaRegistros() {
     const completo = r.inicio && r.fim;
     const pausa = r.periodos ? textoPeriodos(r) : r.almocoSaida && r.almocoVolta ? `almoço ${r.almocoSaida}–${r.almocoVolta}` : r.jantar ? "pausa 60 min" : "sem pausa";
     const opcao = modeloGME() ? (r.commessa ? `commessa ${rotuloCommessa(r.commessa)}` : "") : modeloNGC() ? "" : (r.centro && r.centro !== centroPadrao() ? r.centro.trim() : "");
-    const meta = [completo ? `${fmtHM(minutosTrabalhados(r))} h` : "", pausa, opcao, r.obs].filter(Boolean).join(" · ");
+    const meta = [pausa, opcao, r.obs].filter(Boolean).join(" · ");
     return `<li><button class="reg" data-acao="editar" data-data="${r.data}" aria-label="Editar ${curta(r.data)}">
         <span class="reg-dia"><b>${d.getDate()}</b><small>${SEMANA[d.getDay()]}</small></span>
         <span class="reg-meio">
           <span class="reg-faixa">${r.inicio || "--:--"} – ${r.fim || "--:--"}${viraDia(r) ? ' <span class="mais1">+1</span>' : ""}</span>
           <span class="reg-meta">${completo ? "" : '<span class="sem-fim">sem fim · </span>'}${esc(meta)}</span>
         </span>
-        <span class="reg-valor">${completo ? reais.format(valorDoDia(r)) : ""}</span>
+        <span class="reg-valor">${completo ? `${fmtHM(minutosTrabalhados(r))} h` : ""}</span>
       </button></li>`;
   }).join("");
 
@@ -520,7 +505,6 @@ function telaRegistros() {
     <div class="estatisticas">
       <div><span class="rotulo">Dias</span><span class="estat">${completos.length}</span></div>
       <div><span class="rotulo">Horas</span><span class="estat">${fmtHM(minutos)}</span></div>
-      <div><span class="rotulo">Total</span><span class="estat">${reais.format(valor)}</span></div>
     </div>
     ${lista.length ? `<div class="linha"><span class="lbl-forte cresce">Comprovante do mês</span><button class="link" data-acao="comprovante">Gerar imagem</button></div>` : ""}
     <div class="linha"><span class="lbl-forte cresce">Conferência por período</span><button class="link" data-acao="periodo">Escolher datas</button></div>
@@ -583,7 +567,6 @@ async function gerar() {
       // Na GME e na NGC, o fim de um turno do mês anterior pode cair no dia 1, por isso vão todos os registros do cliente.
       registros: tipo === "comau" ? doMes : Object.values(dados.registros).filter((x) => x.cliente === tipo),
     });
-    const valor = doMes.filter((x) => x.fim).reduce((s, x) => s + valorDoDia(x), 0);
     const arquivo = new File([r.arquivo], nomeArquivo(ano, mes, info.funcionario, tipo), { type: tipo === "comau" ? MIME_XLSM : MIME_XLSX });
     // O comprovante já fica pronto aqui: o iPhone só compartilha arquivos prontos no toque do botão.
     const comprovante = await criarComprovante(ano, mes);
@@ -594,8 +577,7 @@ async function gerar() {
         <div class="estatisticas" style="margin-bottom:20px">
           <div><span class="rotulo">Dias</span><span class="estat">${r.dias}</span></div>
           <div><span class="rotulo">Horas</span><span class="estat">${fmtHM(Math.round(r.totalHoras * 60))}</span></div>
-          <div><span class="rotulo">Total</span><span class="estat">${reais.format(valor)}</span></div>
-        </div>
+            </div>
         <div class="pilha">
           <button class="primario" data-acao="compartilhar-ambos">Salvar planilha + comprovante</button>
           <button class="secundario" data-acao="compartilhar">Só a planilha</button>
@@ -680,7 +662,6 @@ async function gerarPorPeriodo() {
       const nome = nomeArquivo(ano, mes, info.funcionario, cliente).replace(/(\.\w+)$/, `_conferencia_${ini.slice(8)}a${fim.slice(8)}$1`);
       arquivos.push(new File([r.arquivo], nome, { type: cliente === "comau" ? MIME_XLSM : MIME_XLSX }));
     }
-    const valor = lista.filter((x) => x.fim).reduce((s, x) => s + valorDoDia(x), 0);
     const comprovante = await criarComprovante(null, null, {
       lista, titulo: `${dataBR(de)} a ${dataBR(ate)}`,
       nome: `${de.slice(8)}-${de.slice(5, 7)}_a_${ate.slice(8)}-${ate.slice(5, 7)}_${ate.slice(0, 4)}`,
@@ -694,8 +675,7 @@ async function gerarPorPeriodo() {
         <div class="estatisticas" style="margin-bottom:20px">
           <div><span class="rotulo">Dias</span><span class="estat">${diasLancados}</span></div>
           <div><span class="rotulo">Horas</span><span class="estat">${fmtHM(Math.round(horas * 60))}</span></div>
-          <div><span class="rotulo">Total</span><span class="estat">${reais.format(valor)}</span></div>
-        </div>
+            </div>
         <div class="pilha">
           <button class="primario" data-acao="compartilhar-ambos">Salvar ${varias ? "planilhas" : "planilha"} + comprovante</button>
           <button class="secundario" data-acao="compartilhar">${varias ? "Só as planilhas" : "Só a planilha"}</button>
@@ -848,12 +828,7 @@ function telaAjustes() {
       <div class="seg" role="group" aria-label="Tema">${opcaoTema("auto", "Auto")}${opcaoTema("light", "Claro")}${opcaoTema("dark", "Escuro")}</div>
     </div>
 
-    <h2 class="secao">Novos registros${variosClientes() ? ` · ${NOME_CLIENTE[ui.cliente]}` : ""}</h2>
-    <div class="linha">
-      <span class="lbl-forte cresce">Preço por hora padrão</span>
-      <span class="unidade">R$</span>
-      <input id="a-taxa" class="numero" inputmode="decimal" value="${taxaTexto(taxaPadrao())}" placeholder="0" aria-label="Preço por hora padrão">
-    </div>
+    ${modeloNGC() ? "" : `<h2 class="secao">Novos registros${variosClientes() ? ` · ${NOME_CLIENTE[ui.cliente]}` : ""}</h2>`}
     ${modeloGME() ? `<div class="linha empilhada">
       <span class="lbl-forte">Commessa padrão</span>
       ${campoCommessa("a-commessa", c.commessaPadrao, "Commessa padrão")}
@@ -867,10 +842,10 @@ function telaAjustes() {
       </div>
       <button class="interruptor" data-acao="pausa-padrao" role="switch" aria-checked="${c.jantarPadrao}" aria-label="Pausa de 60 minutos por padrão"><span></span></button>
     </div>`}
-    <div class="linha">
-      <button class="link encostado" data-acao="aplicar-taxa">Aplicar preço a ${MESES[ui.mes - 1].toLowerCase()}</button>
+    ${modeloGME() || (!modeloNGC() && modelos.comau) ? `<div class="linha">
+      <span class="cresce"></span>
       <button class="link" data-acao="salvar-ajustes">Salvar</button>
-    </div>
+    </div>` : ""}
 
     <h2 class="secao">Modelo da planilha</h2>
     ${linhaModelo("comau")}
@@ -908,29 +883,12 @@ function telaAjustes() {
     <p class="estado" style="text-align:center;margin-top:28px">Ponto Automisa · ${Object.keys(dados.registros).length} dias registrados</p>`;
 }
 
-function salvarTaxaPadrao() {
-  // O padrão pode ficar em 0 (sem preço pré-preenchido); retorna null só se o texto for inválido.
-  const campo = $("#a-taxa").value.trim();
-  const taxa = /^0*([.,]0*)?$/.test(campo) ? 0 : lerTaxa(campo);
-  if (taxa === null) { mostrarErro("Ajustes não salvos", "Informe o preço por hora (ex.: 50 ou 47,50)."); return null; }
-  dados.config[CHAVE_TAXA[ui.cliente]] = taxa;
+function salvarAjustes() {
   const commessa = $("#a-commessa");
   if (commessa) dados.config.commessaPadrao = commessa.value.trim();
   const centro = $("#a-centro");
   if (centro) dados.config.centroPadrao = centro.value;
-  return salvar() ? taxa : null;
-}
-
-function aplicarTaxaAoMes() {
-  const taxa = salvarTaxaPadrao();
-  if (taxa === null) return;
-  if (!taxa) return mostrarErro("Nada para aplicar", "Informe um preço por hora maior que zero (ex.: 50 ou 47,50).");
-  const lista = registrosDoMes(ui.ano, ui.mes);
-  if (!lista.length) return mostrarErro("Nada para alterar", `Não há registros em ${MESES[ui.mes - 1].toLowerCase()}/${ui.ano}.`);
-  if (!confirm(`Aplicar ${reais.format(taxa)}/h aos ${lista.length} dias de ${MESES[ui.mes - 1].toLowerCase()}/${ui.ano}?`)) return;
-  lista.forEach((r) => { r.taxa = taxa; });
-  if (salvar()) avisar(`Preço aplicado a ${lista.length} dias`);
-  render();
+  return salvar();
 }
 
 async function fazerBackup({ trocarPasta = false } = {}) {
@@ -1113,7 +1071,7 @@ async function restaurarBackup() {
   if (!confirm(`Restaurar ${qtd} dias do backup de ${new Date(lido.exportadoEm).toLocaleDateString("pt-BR")}? Os registros atuais deste aparelho serão substituídos.`)) return;
   // O conteúdo restaurado é o do backup: nada novo para salvar até a próxima alteração.
   const dataBackup = lido.exportadoEm || null;
-  dados = { registros: normalizarRegistros(lido.registros), config: { ...PADRAO.config, ...lido.config, ultimoBackup: dataBackup, alteradoEm: dataBackup, pastaBackup: null, pastaFalhou: false } };
+  dados = { registros: normalizarRegistros(lido.registros), config: { ...semPreco({ ...PADRAO.config, ...lido.config }), ultimoBackup: dataBackup, alteradoEm: dataBackup, pastaBackup: null, pastaFalhou: false } };
   // Backups antigos trazem um único modelo, no campo "modelo".
   const doBackup = lido.modelos || (lido.modelo ? { [ehNGC(lido.modelo.arquivo) ? "ngc" : ehGME(lido.modelo.arquivo) ? "gme" : "comau"]: lido.modelo } : {});
   for (const [tipo, m] of Object.entries(doBackup)) {
@@ -1190,8 +1148,7 @@ document.addEventListener("click", (e) => {
     "alternar-tema": () => escolherTema(temaEfetivo() === "dark" ? "light" : "dark"),
     tema: () => escolherTema(alvo.dataset.valor),
     "pausa-padrao": () => { dados.config.jantarPadrao = !dados.config.jantarPadrao; if (salvar()) render(); },
-    "salvar-ajustes": () => { if (salvarTaxaPadrao() !== null) { avisar("Ajustes salvos"); render(); } },
-    "aplicar-taxa": aplicarTaxaAoMes,
+    "salvar-ajustes": () => { if (salvarAjustes()) { avisar("Ajustes salvos"); render(); } },
     modelo: () => { fecharDialogo(); escolherModelo(); }, backup: () => { if (usaPasta() && !dados.config.pastaBackup) guiaBackup(); else fazerBackup(); }, "backup-guia": () => fazerBackup(), "backup-trocar-pasta": () => fazerBackup({ trocarPasta: true }), restaurar: () => { fecharDialogo(); restaurarBackup(); }, fechar: fecharDialogo,
     "backup-ativar": () => definirLembreteBackup(true),
     "backup-recusar": () => definirLembreteBackup(false),

@@ -132,7 +132,7 @@ h1 { margin: 0; font-size: 28px; font-weight: 700; letter-spacing: -.02em; }
 
 /* ---------- Registros ---------- */
 .nav-mes { display: flex; align-items: center; justify-content: space-between; padding: 8px 0 20px; font-size: 16px; font-weight: 600; }
-.estatisticas { display: grid; grid-template-columns: .7fr 1fr 1.6fr; gap: 12px; padding-bottom: 20px; border-bottom: 1px solid var(--borda); }
+.estatisticas { display: grid; grid-template-columns: .7fr 1.6fr; gap: 12px; padding-bottom: 20px; border-bottom: 1px solid var(--borda); }
 .estatisticas > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .estatisticas .rotulo { font-size: 12px; }
 .estat { font-size: clamp(17px, 5.6vw, 22px); font-weight: 400; white-space: nowrap; font-variant-numeric: tabular-nums; }
